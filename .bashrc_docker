@@ -1,0 +1,58 @@
+# SOL Scalper - RunPod Shell Configuration
+
+export PATH="/root/sol-scalper/scripts:$PATH"
+
+# Load runtime env vars
+if [ -f /root/sol-scalper/.env.runtime ]; then
+    set -a
+    source /root/sol-scalper/.env.runtime
+    set +a
+fi
+
+# Check /data mount
+if [ ! -d /data ]; then
+    echo ""
+    echo "  WARNING: /data not mounted!"
+    echo "  Create a RunPod Network Volume and mount at /data"
+    echo ""
+fi
+
+# Aliases
+alias logs='tail -f /data/logs/scalper.log'
+alias logs-err='tail -f /data/logs/scalper_error.log'
+alias logs-pg='tail -f /data/logs/postgres.log'
+alias logs-redis='tail -f /data/logs/redis.log'
+alias status='supervisorctl status'
+alias restart-scalper='supervisorctl restart scalper'
+alias stop-scalper='supervisorctl stop scalper'
+alias start-scalper='supervisorctl start scalper'
+alias psql-scalper='psql -U postgres -d scalper'
+alias dashboard='cd /root/sol-scalper && python3 -m src.dashboard'
+alias backtest='cd /root/sol-scalper && python3 -m backtest.run_backtest'
+alias download-history='cd /root/sol-scalper && python3 scripts/download_historical.py'
+
+# Welcome banner
+echo ""
+echo "=========================================="
+echo "  SOL Scalper Trading System"
+echo "=========================================="
+echo ""
+echo "  Mode:   ${TRADING_MODE:-paper}"
+echo "  Symbol: ${SYMBOL:-SOLUSDT}"
+echo ""
+echo "  Commands:"
+echo "    dashboard       - Live trading dashboard (full screen)"
+echo "    logs            - Follow scalper logs"
+echo "    logs-err        - Follow error logs"
+echo "    status          - Service status"
+echo "    restart-scalper - Restart the trading bot"
+echo "    stop-scalper    - Stop the trading bot"
+echo "    psql-scalper    - Open database shell"
+echo "    backtest        - Run backtest"
+echo "    download-history - Download historical data"
+echo ""
+echo "  Services:"
+supervisorctl status 2>/dev/null || echo "    (supervisord starting...)"
+echo ""
+echo "=========================================="
+echo ""

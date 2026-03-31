@@ -1,0 +1,6 @@
+# Paper trading overrides
+trading:
+  mode: paper
+
+logging:
+  level: DEBUG

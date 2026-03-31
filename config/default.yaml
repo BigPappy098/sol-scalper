@@ -1,0 +1,130 @@
+# SOL Scalper Default Configuration
+
+trading:
+  symbol: SOLUSDT
+  category: linear  # Bybit perpetual futures
+  risk_per_trade: 0.01  # 1% of equity per trade
+  max_leverage: 5.0
+  order_timeout_seconds: 2  # Cancel-replace limit orders after this
+
+data:
+  candle_timeframes:
+    - 1s
+    - 5s
+    - 15s
+    - 1m
+    - 5m
+  orderbook_depth: 50
+  orderbook_snapshot_interval_ms: 100
+  historical_backfill_candles: 1000
+
+features:
+  return_periods: [1, 3, 5, 10, 20]
+  volatility_windows: [10, 30, 60, 200]
+  atr_period: 14
+  rsi_period: 14
+  bb_period: 20
+  bb_std: 2.5
+  ema_fast: 9
+  ema_slow: 21
+  ema_trend: 55
+  zscore_window: 200
+
+strategies:
+  bb_revert:
+    enabled: true
+    timeframe: 15s
+    context_timeframe: 1m
+    bb_sigma: 2.5
+    rsi_oversold: 20
+    rsi_overbought: 80
+    target_type: bb_middle
+    stop_pct: 0.003
+    time_stop_seconds: 180
+    trail_activation_pct: 0.6
+    trail_stop_pct: 0.001
+    initial_weight: 0.25
+
+  vol_break:
+    enabled: true
+    timeframe: 5s
+    move_threshold_pct: 0.0015
+    volume_spike_mult: 2.0
+    ob_imbalance_threshold: 0.3
+    target_pct: 0.002
+    stop_pct: 0.001
+    time_stop_seconds: 30
+    partial_exit_pct: 0.7
+    trail_stop_pct: 0.0005
+    initial_weight: 0.25
+
+  ob_fade:
+    enabled: true
+    timeframe: 1s
+    imbalance_threshold: 0.6
+    imbalance_sustain_seconds: 3
+    target_pct: 0.0008
+    stop_pct: 0.0005
+    time_stop_seconds: 15
+    initial_weight: 0.2
+
+  ml_signal:
+    enabled: false  # Enabled after Phase 2
+    prediction_horizon_seconds: 60
+    confidence_threshold: 0.65
+    confidence_exit_threshold: 0.5
+    target_pct: 0.001
+    stop_pct: 0.0008
+    time_stop_seconds: 60
+    cooldown_after_stop_seconds: 120
+    initial_weight: 0.2
+
+  funding_sent:
+    enabled: false  # Enabled after Phase 3
+    funding_threshold: 0.0003
+    target_pct: 0.0015
+    stop_pct: 0.001
+    pre_settlement_exit_minutes: 30
+    initial_weight: 0.1
+
+ensemble:
+  min_signal_confidence: 0.55
+  min_combined_weight: 0.5
+
+self_improve:
+  evaluation_interval_hours: 6
+  full_retrain_interval_hours: 24
+  incremental_retrain_interval_hours: 6
+  mute_threshold_sharpe_7d: 0.0
+  weight_reduce_threshold_sharpe_24h: 0.0
+  weight_increase_threshold_sharpe_24h: 1.0
+  ab_test_min_trades: 50
+  ab_test_min_hours: 48
+  ab_test_sharpe_improvement: 0.3
+  training_lookback_days: 14
+
+ml:
+  lgbm:
+    num_rounds: 500
+    learning_rate: 0.05
+    num_leaves: 63
+    max_depth: 7
+    device: gpu
+    early_stopping_rounds: 50
+  cnn:
+    input_length: 120  # 120 seconds of 1s candles
+    channels: [32, 64, 64]
+    kernel_sizes: [5, 5, 3]
+    epochs: 50
+    learning_rate: 0.001
+    batch_size: 256
+
+telegram:
+  trade_notifications: true
+  daily_summary: true
+  daily_summary_hour_utc: 0
+  error_notifications: true
+
+logging:
+  level: INFO
+  format: json

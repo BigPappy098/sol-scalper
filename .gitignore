@@ -1,0 +1,32 @@
+# Environment
+.env
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Data
+data/models/*.txt
+data/models/*.pt
+data/historical/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Runtime
+.env.runtime
+
+# Backtest results
+backtest_results_*.csv
+
+# OS
+.DS_Store
+Thumbs.db

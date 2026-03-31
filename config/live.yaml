@@ -1,0 +1,6 @@
+# Live trading overrides
+trading:
+  mode: live
+
+logging:
+  level: INFO
