@@ -2,6 +2,10 @@
 set -e
 
 DATA_DIR="/data"
+# Use local container storage for postgres - RunPod network volumes don't support
+# POSIX permissions (chmod/chown are no-ops), which breaks initdb.
+PG_DATA="/var/lib/postgresql/16/main"
+PG_BACKUP="$DATA_DIR/postgres_backup"
 
 # ============================================================
 # Initialize persistent data directory on RunPod network volume
@@ -13,30 +17,21 @@ if [ ! -d "$DATA_DIR" ]; then
     mkdir -p "$DATA_DIR"
 fi
 
-# Create persistent subdirectories (non-postgres ones as root)
+# Create persistent subdirectories on network volume
+mkdir -p "$PG_BACKUP"
 mkdir -p "$DATA_DIR/redis"
 mkdir -p "$DATA_DIR/models"
 mkdir -p "$DATA_DIR/logs"
 
 # ============================================================
-# Initialize PostgreSQL (first run only)
+# Initialize PostgreSQL on local storage (supports permissions)
 # ============================================================
-
-PG_DATA="$DATA_DIR/postgres"
-
-# Ensure /data is accessible to the postgres user
-chmod a+rwx "$DATA_DIR" 2>/dev/null || true
-
-# Clean up any botched previous init (directory exists but no PG_VERSION)
-if [ -d "$PG_DATA" ] && [ ! -f "$PG_DATA/PG_VERSION" ]; then
-    echo "Cleaning up incomplete PostgreSQL data directory..."
-    rm -rf "$PG_DATA"
-fi
 
 if [ ! -f "$PG_DATA/PG_VERSION" ]; then
     echo "Initializing PostgreSQL database..."
-    # Let postgres create and own the directory itself (avoids chown on network volumes)
-    su - postgres -c "mkdir -m 700 $PG_DATA"
+    mkdir -p "$PG_DATA"
+    chown postgres:postgres "$PG_DATA"
+    chmod 700 "$PG_DATA"
     su - postgres -c "/usr/lib/postgresql/16/bin/initdb -D $PG_DATA"
 
     # Configure PostgreSQL
@@ -49,12 +44,19 @@ if [ ! -f "$PG_DATA/PG_VERSION" ]; then
     echo "local all all trust" > "$PG_DATA/pg_hba.conf"
     echo "host all all 127.0.0.1/32 trust" >> "$PG_DATA/pg_hba.conf"
 
-    # Start PostgreSQL temporarily to create DB and run migrations
+    # Start PostgreSQL temporarily to create DB and restore/migrate
     su - postgres -c "/usr/lib/postgresql/16/bin/pg_ctl -D $PG_DATA -l $DATA_DIR/logs/postgres_init.log start"
     sleep 2
 
     su - postgres -c "createdb scalper" || true
-    su - postgres -c "psql -d scalper -f /root/sol-scalper/src/db/migrations/001_init.sql"
+
+    if [ -f "$PG_BACKUP/scalper.sql" ]; then
+        echo "Restoring database from network volume backup..."
+        su - postgres -c "psql -d scalper < $PG_BACKUP/scalper.sql"
+    else
+        echo "Running initial migrations..."
+        su - postgres -c "psql -d scalper -f /root/sol-scalper/src/db/migrations/001_init.sql"
+    fi
 
     su - postgres -c "/usr/lib/postgresql/16/bin/pg_ctl -D $PG_DATA stop"
     echo "PostgreSQL initialized."
