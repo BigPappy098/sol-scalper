@@ -13,11 +13,15 @@ if [ ! -d "$DATA_DIR" ]; then
     mkdir -p "$DATA_DIR"
 fi
 
-# Create persistent subdirectories
-mkdir -p "$DATA_DIR/postgres"
+# Create persistent subdirectories (non-postgres ones as root)
 mkdir -p "$DATA_DIR/redis"
 mkdir -p "$DATA_DIR/models"
 mkdir -p "$DATA_DIR/logs"
+
+# Create postgres data dir as the postgres user so it owns it
+# (chown fails on some network volumes; this avoids that entirely)
+chmod o+rwx "$DATA_DIR" 2>/dev/null || true
+su - postgres -c "mkdir -p $DATA_DIR/postgres && chmod 700 $DATA_DIR/postgres"
 
 # ============================================================
 # Initialize PostgreSQL (first run only)
@@ -27,7 +31,6 @@ PG_DATA="$DATA_DIR/postgres"
 
 if [ ! -f "$PG_DATA/PG_VERSION" ]; then
     echo "Initializing PostgreSQL database..."
-    chown -R postgres:postgres "$PG_DATA"
     su - postgres -c "/usr/lib/postgresql/16/bin/initdb -D $PG_DATA"
 
     # Configure PostgreSQL
@@ -49,8 +52,6 @@ if [ ! -f "$PG_DATA/PG_VERSION" ]; then
 
     su - postgres -c "/usr/lib/postgresql/16/bin/pg_ctl -D $PG_DATA stop"
     echo "PostgreSQL initialized."
-else
-    chown -R postgres:postgres "$PG_DATA"
 fi
 
 # Symlink model directory
