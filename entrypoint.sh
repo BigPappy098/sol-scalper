@@ -18,19 +18,25 @@ mkdir -p "$DATA_DIR/redis"
 mkdir -p "$DATA_DIR/models"
 mkdir -p "$DATA_DIR/logs"
 
-# Create postgres data dir as the postgres user so it owns it
-# (chown fails on some network volumes; this avoids that entirely)
-chmod o+rwx "$DATA_DIR" 2>/dev/null || true
-su - postgres -c "mkdir -p $DATA_DIR/postgres && chmod 700 $DATA_DIR/postgres"
-
 # ============================================================
 # Initialize PostgreSQL (first run only)
 # ============================================================
 
 PG_DATA="$DATA_DIR/postgres"
 
+# Ensure /data is accessible to the postgres user
+chmod a+rwx "$DATA_DIR" 2>/dev/null || true
+
+# Clean up any botched previous init (directory exists but no PG_VERSION)
+if [ -d "$PG_DATA" ] && [ ! -f "$PG_DATA/PG_VERSION" ]; then
+    echo "Cleaning up incomplete PostgreSQL data directory..."
+    rm -rf "$PG_DATA"
+fi
+
 if [ ! -f "$PG_DATA/PG_VERSION" ]; then
     echo "Initializing PostgreSQL database..."
+    # Let postgres create and own the directory itself (avoids chown on network volumes)
+    su - postgres -c "mkdir -m 700 $PG_DATA"
     su - postgres -c "/usr/lib/postgresql/16/bin/initdb -D $PG_DATA"
 
     # Configure PostgreSQL
