@@ -13,7 +13,7 @@ from src.data.feature_store import FeatureStore
 from src.data.ingestion import DataIngestionService
 from src.data.schemas import Candle
 from src.db.database import Database
-from src.execution.bybit_client import BybitClient
+from src.execution.bybit_client import HyperliquidClient
 from src.execution.engine import ExecutionEngine
 from src.notifications.telegram_bot import TelegramNotifier
 from src.risk.manager import RiskManager
@@ -38,7 +38,7 @@ class TradingSystem:
         # Core infrastructure
         self._db: Database | None = None
         self._event_bus: EventBus | None = None
-        self._bybit: BybitClient | None = None
+        self._client: HyperliquidClient | None = None
 
     async def _wait_for_services(self, timeout: int = 60) -> None:
         """Wait for PostgreSQL and Redis to be ready."""
@@ -102,13 +102,13 @@ class TradingSystem:
         self._event_bus = EventBus(self._settings.redis_url)
         await self._event_bus.connect()
 
-        self._bybit = BybitClient()
-        self._bybit.connect()
+        self._client = HyperliquidClient()
+        self._client.connect()
 
         # 2. Initialize risk manager with current equity
         self._risk = RiskManager()
         try:
-            equity = self._bybit.get_equity()
+            equity = self._client.get_equity()
             self._risk.update_equity(equity)
             log.info("initial_equity", equity=equity)
         except Exception as e:
@@ -126,13 +126,13 @@ class TradingSystem:
 
         # 5. Initialize execution engine
         self._execution = ExecutionEngine(
-            self._bybit, self._risk, self._event_bus, self._db
+            self._client, self._risk, self._event_bus, self._db
         )
         await self._execution.start()
 
         # 6. Initialize data ingestion
         self._ingestion = DataIngestionService(
-            self._bybit, self._event_bus, self._db
+            self._client, self._event_bus, self._db
         )
         await self._ingestion.start()
 
@@ -199,8 +199,8 @@ class TradingSystem:
             await self._execution.stop()
         if self._telegram:
             await self._telegram.stop()
-        if self._bybit:
-            self._bybit.close()
+        if self._client:
+            self._client.close()
         if self._event_bus:
             await self._event_bus.close()
         if self._db:
@@ -362,7 +362,7 @@ class TradingSystem:
         """Periodically snapshot equity for tracking."""
         while self._running:
             try:
-                equity = self._bybit.get_equity()
+                equity = self._client.get_equity()
                 self._risk.update_equity(equity)
 
                 await self._db.execute(

@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from src.data.schemas import Candle, Signal, SignalDirection
-from src.execution.bybit_client import BybitClient
+from src.execution.bybit_client import HyperliquidClient
 from src.strategies.base import BaseStrategy
 from src.utils.logging import get_logger
 
@@ -29,9 +29,9 @@ class FundingSentimentStrategy(BaseStrategy):
     - Time stop: 30 min before settlement
     """
 
-    def __init__(self, config: dict, bybit_client: BybitClient):
+    def __init__(self, config: dict, client: HyperliquidClient):
         super().__init__("funding_sent", config)
-        self._client = bybit_client
+        self._client = client
         self._funding_threshold = config.get("funding_threshold", 0.0003)
         self._target_pct = config.get("target_pct", 0.0015)
         self._stop_pct = config.get("stop_pct", 0.001)
@@ -61,7 +61,7 @@ class FundingSentimentStrategy(BaseStrategy):
 
         # Fetch current funding rate
         try:
-            funding_data = self._client.get_funding_rate("SOLUSDT")
+            funding_data = self._client.get_funding_rate("SOL")
             self._current_funding = float(funding_data.get("fundingRate", 0))
             self._last_funding_check = now
         except Exception as e:

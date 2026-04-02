@@ -1,15 +1,15 @@
 # SOL Scalper
 
-Autonomous SOL/USDT perpetual futures scalping bot for Bybit. Runs 24/7 on RunPod as a single Docker container.
+Autonomous SOL/USD perpetual futures scalping bot on Hyperliquid. Runs 24/7 on RunPod as a single Docker container.
 
 ## Deploy on RunPod
 
 ### 1. Get API Keys
 
-| Service | Purpose | URL |
+| Service | Purpose | How |
 |---|---|---|
-| Bybit testnet | Paper trading | [testnet.bybit.com](https://testnet.bybit.com) |
-| Bybit mainnet | Live trading | [bybit.com](https://bybit.com) |
+| Hyperliquid wallet | Trading | Create an Ethereum wallet (MetaMask, etc.) and deposit USDC via Arbitrum |
+| Hyperliquid testnet | Paper trading | Use testnet at [app.hyperliquid-testnet.xyz](https://app.hyperliquid-testnet.xyz) |
 | Telegram | Trade alerts | [@BotFather](https://t.me/BotFather) |
 | Anthropic | Self-improvement agent | [console.anthropic.com](https://console.anthropic.com) |
 
@@ -27,12 +27,12 @@ Autonomous SOL/USDT perpetual futures scalping bot for Bybit. Runs 24/7 on RunPo
    | Variable | Required | Description |
    |---|---|---|
    | `TRADING_MODE` | yes | `paper` or `live` |
-   | `BYBIT_API_KEY` | yes | Bybit API key (testnet key for paper mode) |
-   | `BYBIT_API_SECRET` | yes | Bybit API secret |
+   | `HL_PRIVATE_KEY` | yes | Wallet private key (hex, starts with `0x`) |
+   | `HL_WALLET_ADDRESS` | yes | Wallet public address |
    | `TELEGRAM_BOT_TOKEN` | yes | Telegram bot token from @BotFather |
    | `TELEGRAM_CHAT_ID` | yes | Your Telegram chat ID for notifications |
    | `ANTHROPIC_API_KEY` | yes | Claude API key for self-improvement agent |
-   | `SYMBOL` | no | Trading pair (default: `SOLUSDT`) |
+   | `SYMBOL` | no | Trading pair (default: `SOL`) |
    | `RISK_PER_TRADE` | no | Fraction of equity per trade (default: `0.01`) |
    | `MAX_LEVERAGE` | no | Max leverage (default: `5.0`) |
 
@@ -48,7 +48,7 @@ SSH into the pod or use the RunPod web terminal. You'll see:
 ==========================================
 
   Mode:   paper
-  Symbol: SOLUSDT
+  Symbol: SOL
 
   Commands:
     dashboard       - Live trading dashboard (full screen)
@@ -79,6 +79,15 @@ logs
 # Restart just the bot (keeps DB/Redis running)
 restart-scalper
 ```
+
+## Why Hyperliquid
+
+- **No KYC** — connect any Ethereum wallet, no identity verification
+- **No geo-restrictions** — works from the US (decentralized exchange)
+- **Lower fees** — 0.01% maker / 0.035% taker (cheaper than Bybit/Binance)
+- **SOL/USD perp** — high liquidity, tight spreads
+- **Testnet available** — full paper trading support
+- **Deposit:** bridge USDC to Arbitrum, then deposit to Hyperliquid
 
 ## What's Inside
 

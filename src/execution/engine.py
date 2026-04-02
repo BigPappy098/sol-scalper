@@ -16,7 +16,7 @@ from src.data.schemas import (
     TradeRecord,
 )
 from src.db.database import Database
-from src.execution.bybit_client import BybitClient
+from src.execution.bybit_client import HyperliquidClient
 from src.risk.manager import RiskManager
 from src.utils.events import EventBus
 from src.utils.logging import get_logger
@@ -25,7 +25,7 @@ log = get_logger(__name__)
 
 
 class ExecutionEngine:
-    """Core execution engine that bridges signals to Bybit orders.
+    """Core execution engine that bridges signals to Hyperliquid orders.
 
     Handles:
     - Signal → order placement
@@ -36,12 +36,12 @@ class ExecutionEngine:
 
     def __init__(
         self,
-        bybit_client: BybitClient,
+        client: HyperliquidClient,
         risk_manager: RiskManager,
         event_bus: EventBus,
         database: Database,
     ):
-        self._client = bybit_client
+        self._client = client
         self._risk = risk_manager
         self._event_bus = event_bus
         self._db = database
@@ -62,8 +62,8 @@ class ExecutionEngine:
             )
             log.info(
                 "instrument_info_loaded",
-                symbol=self._settings.symbol,
-                tick_size=self._instrument_info.get("priceFilter", {}).get("tickSize"),
+                coin=self._settings.coin,
+                sz_decimals=self._instrument_info.get("szDecimals"),
                 lot_size=self._instrument_info.get("lotSizeFilter", {}).get("qtyStep"),
             )
         except Exception as e:
@@ -87,13 +87,12 @@ class ExecutionEngine:
         except Exception as e:
             log.error("equity_fetch_failed", error=str(e))
 
-        # Start position monitor
+        # Start position monitor (handles SL/TP/time stops since HL doesn't have native SL/TP on market orders)
         asyncio.create_task(self._monitor_positions())
 
-        # Start private WebSocket for order/position updates
+        # Start private WebSocket for fill updates
         self._client.start_private_ws({
             "execution": self._on_execution,
-            "position": self._on_position_update,
         })
 
         log.info("execution_engine_started")
@@ -139,16 +138,14 @@ class ExecutionEngine:
 
         try:
             order_result = self._client.place_order(
-                symbol=self._settings.symbol,
+                symbol=self._settings.coin,
                 side=side,
                 qty=quantity,
                 order_type="Market",
-                stop_loss=stop_price,
-                take_profit=tp_price,
                 order_link_id=position_id,
             )
 
-            if not order_result.get("orderId"):
+            if not order_result.get("orderId") and not order_result.get("raw", {}).get("status") == "ok":
                 log.error("order_failed", result=order_result)
                 return None
 
@@ -156,12 +153,15 @@ class ExecutionEngine:
             log.error("order_placement_error", error=str(e))
             return None
 
+        # Use fill price if available, otherwise use signal price
+        fill_price = float(order_result.get("avgPrice", current_price))
+
         # Create position record
         position = Position(
             id=position_id,
-            symbol=self._settings.symbol,
+            symbol=self._settings.coin,
             side=Side.LONG if signal.direction == SignalDirection.LONG else Side.SHORT,
-            entry_price=current_price,
+            entry_price=fill_price,
             quantity=quantity,
             entry_time=datetime.now(timezone.utc),
             strategy_name=signal.strategy_name,
@@ -171,7 +171,7 @@ class ExecutionEngine:
 
         self._positions[position_id] = position
         self._risk.register_position(position_id, {
-            "position_value": quantity * current_price,
+            "position_value": quantity * fill_price,
             "side": position.side.value,
         })
 
@@ -179,7 +179,7 @@ class ExecutionEngine:
         await self._event_bus.publish("trades:entry", {
             "position_id": position_id,
             "side": position.side.value,
-            "entry_price": current_price,
+            "entry_price": fill_price,
             "quantity": quantity,
             "stop_loss": stop_price,
             "take_profit": tp_price,
@@ -191,7 +191,7 @@ class ExecutionEngine:
             "position_opened",
             position_id=position_id,
             side=position.side.value,
-            entry_price=current_price,
+            entry_price=fill_price,
             quantity=quantity,
             stop_loss=stop_price,
             take_profit=tp_price,
@@ -211,17 +211,20 @@ class ExecutionEngine:
         if not position:
             return None
 
-        # Place closing market order
+        # Place closing market order (reduce_only)
         close_side = "Sell" if position.side == Side.LONG else "Buy"
 
         try:
-            self._client.place_order(
+            result = self._client.place_order(
                 symbol=position.symbol,
                 side=close_side,
                 qty=position.quantity,
                 order_type="Market",
                 reduce_only=True,
             )
+            # Use fill price if available
+            if result.get("avgPrice"):
+                exit_price = float(result["avgPrice"])
         except Exception as e:
             log.error("close_order_failed", position_id=position_id, error=str(e))
             return None
@@ -250,8 +253,8 @@ class ExecutionEngine:
         position_value = position.quantity * position.entry_price
         pnl_usd = position_value * pnl_pct
 
-        # Estimate fees (maker: 0.01%, taker: 0.06% — assume taker for market orders)
-        fee_rate = 0.0006  # 0.06% taker
+        # Estimate fees (Hyperliquid: maker 0.01%, taker 0.035%)
+        fee_rate = 0.00035  # 0.035% taker
         fees = position_value * fee_rate * 2  # Entry + exit
         pnl_usd -= fees
 
@@ -312,85 +315,75 @@ class ExecutionEngine:
         return trade
 
     async def _monitor_positions(self) -> None:
-        """Background task that monitors open positions for time-based exits."""
+        """Background task that monitors open positions for SL/TP/time exits.
+
+        Hyperliquid doesn't support native SL/TP on market orders,
+        so we monitor price and close manually.
+        """
         while self._running:
             try:
                 now = datetime.now(timezone.utc)
+                current_price = self._estimate_current_price()
+
                 for pos_id, position in list(self._positions.items()):
                     if position.status != "open":
                         continue
 
-                    # Check time stop (we rely on exchange for SL/TP)
-                    # Time stops need to be managed by us
                     elapsed = (now - position.entry_time).total_seconds()
 
-                    # Default time stop: 3 minutes for all strategies
+                    # Check stop-loss
+                    if current_price > 0 and position.stop_loss_price:
+                        if position.side == Side.LONG and current_price <= position.stop_loss_price:
+                            log.info("stop_loss_triggered", position_id=pos_id, price=current_price)
+                            await self.close_position(pos_id, ExitReason.STOP_LOSS, current_price)
+                            continue
+                        elif position.side == Side.SHORT and current_price >= position.stop_loss_price:
+                            log.info("stop_loss_triggered", position_id=pos_id, price=current_price)
+                            await self.close_position(pos_id, ExitReason.STOP_LOSS, current_price)
+                            continue
+
+                    # Check take-profit
+                    if current_price > 0 and position.take_profit_price:
+                        if position.side == Side.LONG and current_price >= position.take_profit_price:
+                            log.info("take_profit_triggered", position_id=pos_id, price=current_price)
+                            await self.close_position(pos_id, ExitReason.TAKE_PROFIT, current_price)
+                            continue
+                        elif position.side == Side.SHORT and current_price <= position.take_profit_price:
+                            log.info("take_profit_triggered", position_id=pos_id, price=current_price)
+                            await self.close_position(pos_id, ExitReason.TAKE_PROFIT, current_price)
+                            continue
+
+                    # Check time stop (default 3 minutes)
                     time_stop = 180
                     if elapsed > time_stop:
-                        log.info(
-                            "time_stop_triggered",
-                            position_id=pos_id,
-                            elapsed=elapsed,
-                        )
+                        log.info("time_stop_triggered", position_id=pos_id, elapsed=elapsed)
                         await self.close_position(pos_id, ExitReason.TIME_STOP)
 
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)  # Check every 500ms for scalping
             except Exception as e:
                 log.error("position_monitor_error", error=str(e))
                 await asyncio.sleep(5)
 
     def _on_execution(self, message: dict) -> None:
-        """Handle execution/fill updates from private WebSocket."""
+        """Handle user event updates from Hyperliquid WebSocket."""
         try:
-            data = message.get("data", [])
-            for exec_data in data:
-                order_link_id = exec_data.get("orderLinkId", "")
-                exec_type = exec_data.get("execType", "")
-
-                if order_link_id in self._positions and exec_type == "Trade":
-                    exec_price = float(exec_data.get("execPrice", 0))
+            data = message.get("data", message)
+            if isinstance(data, dict):
+                fills = data.get("fills", [])
+                for fill in fills:
+                    coin = fill.get("coin", "")
+                    px = fill.get("px", "0")
+                    sz = fill.get("sz", "0")
                     log.info(
                         "execution_fill",
-                        position_id=order_link_id,
-                        exec_price=exec_price,
-                        exec_qty=exec_data.get("execQty"),
+                        coin=coin,
+                        price=px,
+                        size=sz,
+                        side=fill.get("side", ""),
+                        closed_pnl=fill.get("closedPnl", "0"),
                     )
         except Exception as e:
             log.error("execution_callback_error", error=str(e))
-
-    def _on_position_update(self, message: dict) -> None:
-        """Handle position updates from private WebSocket."""
-        try:
-            data = message.get("data", [])
-            for pos_data in data:
-                size = float(pos_data.get("size", 0))
-                symbol = pos_data.get("symbol", "")
-
-                # If position size went to 0, a stop-loss or take-profit was hit
-                if size == 0 and symbol == self._settings.symbol:
-                    # Find matching position and close it
-                    for pos_id, position in list(self._positions.items()):
-                        if position.symbol == symbol and position.status == "open":
-                            # Determine exit reason from the close price
-                            close_price = float(pos_data.get("avgPrice", 0))
-                            if close_price > 0:
-                                if position.side == Side.LONG:
-                                    pnl = close_price - position.entry_price
-                                else:
-                                    pnl = position.entry_price - close_price
-
-                                reason = (
-                                    ExitReason.TAKE_PROFIT
-                                    if pnl > 0
-                                    else ExitReason.STOP_LOSS
-                                )
-
-                                # Schedule async finalization
-                                asyncio.get_event_loop().create_task(
-                                    self._finalize_position(position, close_price, reason)
-                                )
-        except Exception as e:
-            log.error("position_update_error", error=str(e))
 
     def _get_current_price(self, signal: Signal) -> float:
         """Get current price from signal metadata or ticker."""

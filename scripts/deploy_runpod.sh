@@ -16,8 +16,8 @@
 #    - Network Volume: Create one (20GB minimum), mount at /data
 #    - Environment Variables:
 #        TRADING_MODE=paper
-#        BYBIT_API_KEY=<your testnet key>
-#        BYBIT_API_SECRET=<your testnet secret>
+#        HL_PRIVATE_KEY=<your wallet private key>
+#        HL_WALLET_ADDRESS=<your wallet address>
 #        TELEGRAM_BOT_TOKEN=<your bot token>
 #        TELEGRAM_CHAT_ID=<your chat id>
 #        ANTHROPIC_API_KEY=<your claude api key>
@@ -26,18 +26,18 @@
 #    - Initialize PostgreSQL + TimescaleDB on first boot
 #    - Start Redis
 #    - Start the trading bot
-#    - Begin paper trading SOL/USDT on Bybit testnet
+#    - Begin paper trading SOL/USD on Hyperliquid testnet
 #
 # 4. SSH or Web Terminal into the pod to monitor:
 #    $ logs            # Follow trading logs
 #    $ status          # Check service status
+#    $ dashboard       # Live visual dashboard
 #    $ psql-scalper    # Open database shell
 #    $ backtest        # Run backtest on collected data
 #
 # 5. To go live, stop the pod and recreate with:
 #    TRADING_MODE=live
-#    BYBIT_API_KEY=<your mainnet key>
-#    BYBIT_API_SECRET=<your mainnet secret>
+#    (same wallet keys — Hyperliquid uses mainnet API automatically)
 #
 # ============================================================
 

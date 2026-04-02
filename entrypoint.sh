@@ -63,12 +63,12 @@ ln -sfn "$DATA_DIR/models" /root/sol-scalper/data/models
 export TRADING_MODE="${TRADING_MODE:-paper}"
 export DATABASE_URL="${DATABASE_URL:-postgresql+asyncpg://postgres@localhost:5432/scalper}"
 export REDIS_URL="${REDIS_URL:-redis://localhost:6379}"
-export SYMBOL="${SYMBOL:-SOLUSDT}"
+export SYMBOL="${SYMBOL:-SOL}"
 export RISK_PER_TRADE="${RISK_PER_TRADE:-0.01}"
 export MAX_LEVERAGE="${MAX_LEVERAGE:-5.0}"
 
 # Write env vars to a file so supervisord processes can access them
-env | grep -E '^(TRADING_MODE|BYBIT_|TELEGRAM_|ANTHROPIC_|DATABASE_URL|REDIS_URL|SYMBOL|RISK_|MAX_)' > /root/sol-scalper/.env.runtime 2>/dev/null || true
+env | grep -E '^(TRADING_MODE|HL_|TELEGRAM_|ANTHROPIC_|DATABASE_URL|REDIS_URL|SYMBOL|RISK_|MAX_)' > /root/sol-scalper/.env.runtime 2>/dev/null || true
 
 # ============================================================
 # Start all services via supervisord

@@ -48,9 +48,9 @@ class Settings(BaseSettings):
     # Trading mode
     trading_mode: str = Field(default="paper", alias="TRADING_MODE")
 
-    # Bybit
-    bybit_api_key: str = Field(default="", alias="BYBIT_API_KEY")
-    bybit_api_secret: str = Field(default="", alias="BYBIT_API_SECRET")
+    # Hyperliquid
+    hl_private_key: str = Field(default="", alias="HL_PRIVATE_KEY")
+    hl_wallet_address: str = Field(default="", alias="HL_WALLET_ADDRESS")
 
     # Database (localhost — all services run in same container)
     database_url: str = Field(
@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
 
     # Trading params
-    symbol: str = Field(default="SOLUSDT", alias="SYMBOL")
+    symbol: str = Field(default="SOL", alias="SYMBOL")
     risk_per_trade: float = Field(default=0.01, alias="RISK_PER_TRADE")
     max_leverage: float = Field(default=5.0, alias="MAX_LEVERAGE")
 
@@ -87,16 +87,21 @@ class Settings(BaseSettings):
         return self.trading_mode == "paper"
 
     @property
-    def bybit_endpoint(self) -> str:
-        if self.is_paper:
-            return "https://api-testnet.bybit.com"
-        return "https://api.bybit.com"
+    def coin(self) -> str:
+        """Get the coin name for Hyperliquid (e.g. 'SOL')."""
+        # Strip USDT/USD/PERP suffixes if present
+        s = self.symbol.upper()
+        for suffix in ("USDT", "USD", "PERP", "-PERP"):
+            if s.endswith(suffix):
+                s = s[: -len(suffix)]
+        return s
 
     @property
-    def bybit_ws_endpoint(self) -> str:
+    def hl_base_url(self) -> str:
+        """Hyperliquid API base URL (testnet or mainnet)."""
         if self.is_paper:
-            return "wss://stream-testnet.bybit.com"
-        return "wss://stream.bybit.com"
+            return "https://api.hyperliquid-testnet.xyz"
+        return "https://api.hyperliquid.xyz"
 
     def get_strategy_config(self, strategy_name: str) -> dict:
         """Get strategy-specific config from YAML."""

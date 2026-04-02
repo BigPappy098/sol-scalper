@@ -1,4 +1,4 @@
-"""Market data ingestion service — connects to Bybit WebSocket and feeds candle builder."""
+"""Market data ingestion service — connects to Hyperliquid WebSocket and feeds candle builder."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from src.data.candle_builder import CandleBuilder
 from src.data.orderbook import OrderbookManager
 from src.data.schemas import Candle, Tick
 from src.db.database import Database
-from src.execution.bybit_client import BybitClient
+from src.execution.bybit_client import HyperliquidClient
 from src.utils.events import EventBus
 from src.utils.logging import get_logger
 
@@ -19,15 +19,15 @@ log = get_logger(__name__)
 
 
 class DataIngestionService:
-    """Consumes market data from Bybit WebSocket and publishes processed events."""
+    """Consumes market data from Hyperliquid WebSocket and publishes processed events."""
 
     def __init__(
         self,
-        bybit_client: BybitClient,
+        client: HyperliquidClient,
         event_bus: EventBus,
         database: Database,
     ):
-        self._client = bybit_client
+        self._client = client
         self._event_bus = event_bus
         self._db = database
         self._settings = get_settings()
@@ -104,44 +104,65 @@ class DataIngestionService:
             log.error("backfill_failed", error=str(e))
 
     def _on_trade(self, message: dict) -> None:
-        """Callback for WebSocket trade messages (runs in pybit's thread)."""
+        """Callback for WebSocket trade messages (runs in SDK's thread).
+
+        Hyperliquid trade message format:
+        {"channel": "trades", "data": [{"coin": "SOL", "side": "B", "px": "150.5", "sz": "1.0", "time": 1704067200000, ...}]}
+        """
         try:
             data = message.get("data", [])
-            for trade in data:
-                tick = Tick(
-                    timestamp=datetime.fromtimestamp(
-                        int(trade["T"]) / 1000, tz=timezone.utc
-                    ),
-                    price=float(trade["p"]),
-                    volume=float(trade["v"]),
-                    side=trade["S"],
-                )
-                self._candle_builder.on_tick(tick)
-                self._tick_count += 1
+            if isinstance(data, list):
+                for trade in data:
+                    tick = Tick(
+                        timestamp=datetime.fromtimestamp(
+                            int(trade.get("time", 0)) / 1000, tz=timezone.utc
+                        ),
+                        price=float(trade.get("px", 0)),
+                        volume=float(trade.get("sz", 0)),
+                        side="Buy" if trade.get("side") == "B" else "Sell",
+                    )
+                    self._candle_builder.on_tick(tick)
+                    self._tick_count += 1
         except Exception as e:
             log.error("trade_processing_error", error=str(e))
 
     def _on_orderbook(self, message: dict) -> None:
-        """Callback for WebSocket orderbook messages."""
-        try:
-            msg_type = message.get("type", "")
-            data = message.get("data", {})
+        """Callback for WebSocket L2 orderbook messages.
 
-            if msg_type == "snapshot":
-                self._orderbook.on_snapshot(data)
-            elif msg_type == "delta":
-                self._orderbook.on_delta(data)
+        Hyperliquid l2Book format:
+        {"channel": "l2Book", "data": {"coin": "SOL", "levels": [[{px, sz, n}, ...], [{px, sz, n}, ...]], "time": ...}}
+        """
+        try:
+            data = message.get("data", {})
+            levels = data.get("levels", [])
+
+            if len(levels) >= 2:
+                # Convert to format expected by OrderbookManager
+                bids = [
+                    [float(level.get("px", 0)), float(level.get("sz", 0))]
+                    for level in levels[0]
+                ]
+                asks = [
+                    [float(level.get("px", 0)), float(level.get("sz", 0))]
+                    for level in levels[1]
+                ]
+
+                # Always treat as snapshot (HL sends full book each time)
+                self._orderbook.on_snapshot({
+                    "b": bids,
+                    "a": asks,
+                })
         except Exception as e:
             log.error("orderbook_processing_error", error=str(e))
 
     def _on_kline(self, message: dict) -> None:
-        """Callback for WebSocket kline messages (used as cross-check)."""
+        """Callback for WebSocket kline/candle messages (used as cross-check)."""
         # We build our own candles from ticks for more granularity,
         # but use exchange klines to verify accuracy
         pass
 
     def _on_candle_complete_sync(self, candle: Candle) -> None:
-        """Synchronous callback from CandleBuilder (runs in pybit's thread).
+        """Synchronous callback from CandleBuilder (runs in SDK's thread).
         Puts candle into async queue for processing.
         """
         try:

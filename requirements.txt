@@ -1,5 +1,6 @@
 # Exchange
-pybit>=5.8.0
+hyperliquid-python-sdk>=0.4.0
+eth-account>=0.11.0
 
 # Data
 pandas>=2.2.0

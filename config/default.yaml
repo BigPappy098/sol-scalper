@@ -1,8 +1,8 @@
 # SOL Scalper Default Configuration
 
 trading:
-  symbol: SOLUSDT
-  category: linear  # Bybit perpetual futures
+  symbol: SOL
+  exchange: hyperliquid  # Decentralized perps exchange
   risk_per_trade: 0.01  # 1% of equity per trade
   max_leverage: 5.0
   order_timeout_seconds: 2  # Cancel-replace limit orders after this
@@ -14,7 +14,7 @@ data:
     - 15s
     - 1m
     - 5m
-  orderbook_depth: 50
+  orderbook_depth: 20
   orderbook_snapshot_interval_ms: 100
   historical_backfill_candles: 1000
 
