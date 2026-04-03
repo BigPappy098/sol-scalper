@@ -63,6 +63,7 @@ if [ ! -f "$PG_DATA/PG_VERSION" ]; then
 fi
 
 # Symlink model directory
+mkdir -p /root/sol-scalper/data
 ln -sfn "$DATA_DIR/models" /root/sol-scalper/data/models
 
 # ============================================================
