@@ -109,11 +109,17 @@ class TradingSystem:
         self._risk = RiskManager()
         try:
             equity = self._client.get_equity()
-            self._risk.update_equity(equity)
-            log.info("initial_equity", equity=equity)
+            if equity > 0:
+                self._risk.update_equity(equity)
+                log.info("initial_equity", equity=equity)
+            else:
+                log.warning("equity_zero_or_missing", equity=equity,
+                            hint="Check HL_PRIVATE_KEY and HL_WALLET_ADDRESS are correct and account is funded")
+                self._risk.update_equity(0.0)
         except Exception as e:
-            log.warning("equity_fetch_failed_using_default", error=str(e))
-            self._risk.update_equity(1000.0)  # Default $1k
+            log.error("equity_fetch_failed", error=str(e),
+                      hint="Check network connectivity and API credentials")
+            self._risk.update_equity(0.0)
 
         # 3. Initialize feature store
         self._feature_store = FeatureStore(self._settings.get_feature_config())
@@ -363,7 +369,10 @@ class TradingSystem:
         while self._running:
             try:
                 equity = self._client.get_equity()
-                self._risk.update_equity(equity)
+                if equity > 0:
+                    self._risk.update_equity(equity)
+                else:
+                    log.warning("equity_snapshot_zero", equity=equity)
 
                 await self._db.execute(
                     """
