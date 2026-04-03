@@ -30,7 +30,8 @@ RUN curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmo
     && echo "deb [signed-by=/usr/share/keyrings/timescaledb-keyring.gpg] https://packagecloud.io/timescale/timescaledb/ubuntu/ $(lsb_release -cs) main" > /etc/apt/sources.list.d/timescaledb.list \
     && apt-get update \
     && apt-get install -y postgresql-16 timescaledb-2-postgresql-16 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && pg_dropcluster --stop 16 main 2>/dev/null || true
 
 # --- Install Redis ---
 RUN apt-get update && apt-get install -y redis-server && rm -rf /var/lib/apt/lists/*
