@@ -43,6 +43,7 @@ if [ ! -f "$PG_DATA/PG_VERSION" ]; then
     # Allow local connections without password
     echo "local all all trust" > "$PG_DATA/pg_hba.conf"
     echo "host all all 127.0.0.1/32 trust" >> "$PG_DATA/pg_hba.conf"
+    echo "host all all ::1/128 trust" >> "$PG_DATA/pg_hba.conf"
 
     # Start PostgreSQL temporarily to create DB and restore/migrate
     su - postgres -c "/usr/lib/postgresql/16/bin/pg_ctl -D $PG_DATA -l $DATA_DIR/logs/postgres_init.log start"
