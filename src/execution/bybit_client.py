@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -17,6 +18,25 @@ from src.config.settings import get_settings
 from src.utils.logging import get_logger
 
 log = get_logger(__name__)
+
+
+def _retry(func, retries: int = 3, base_delay: float = 1.0):
+    """Call *func* with exponential-backoff retries on failure or None response."""
+    last_err = None
+    for attempt in range(retries):
+        try:
+            result = func()
+            if result is not None:
+                return result
+            log.warning("api_returned_none", attempt=attempt + 1, func=getattr(func, "__qualname__", str(func)))
+        except Exception as e:
+            last_err = e
+            log.warning("api_call_failed", attempt=attempt + 1, error=str(e))
+        if attempt < retries - 1:
+            time.sleep(base_delay * (2 ** attempt))
+    if last_err:
+        log.error("api_call_exhausted_retries", error=str(last_err))
+    return None
 
 
 class HyperliquidClient:
@@ -72,7 +92,10 @@ class HyperliquidClient:
     def _load_meta(self) -> None:
         """Load exchange metadata (asset specs, size decimals, etc.)."""
         try:
-            meta = self._info.meta()
+            meta = _retry(lambda: self._info.meta())
+            if meta is None:
+                log.error("meta_load_failed", error="API returned None after retries")
+                return
             self._meta = meta
             for i, asset in enumerate(meta.get("universe", [])):
                 self._asset_index[asset["name"]] = i
@@ -144,19 +167,28 @@ class HyperliquidClient:
 
     # --- REST API Methods ---
 
-    def get_account_balance(self) -> dict:
+    def get_account_balance(self) -> dict | None:
         """Get account state including margin summary."""
-        return self._info.user_state(self._address)
+        return _retry(lambda: self._info.user_state(self._address))
 
     def get_equity(self) -> float:
         """Get total account value in USD."""
         state = self.get_account_balance()
+        if state is None:
+            log.error("get_equity_failed", error="account balance returned None")
+            return 0.0
         summary = state.get("crossMarginSummary") or state.get("marginSummary") or {}
-        return float(summary.get("accountValue", 0))
+        equity = float(summary.get("accountValue", 0))
+        log.debug("equity_fetched", equity=equity,
+                  source="crossMarginSummary" if state.get("crossMarginSummary") else "marginSummary")
+        return equity
 
     def get_available_margin(self) -> float:
         """Get available margin for new trades."""
         state = self.get_account_balance()
+        if state is None:
+            log.error("get_available_margin_failed", error="account balance returned None")
+            return 0.0
         summary = state.get("crossMarginSummary") or state.get("marginSummary") or {}
         return float(summary.get("totalRawUsd", 0))
 
@@ -224,6 +256,10 @@ class HyperliquidClient:
                 reduce_only=reduce_only,
             )
 
+        if result is None:
+            log.error("order_returned_none", coin=coin, side=side, qty=qty)
+            return {"raw": None, "error": "API returned None"}
+
         log.info(
             "order_placed",
             coin=coin,
@@ -274,11 +310,15 @@ class HyperliquidClient:
 
     def get_open_orders(self, symbol: str) -> list[dict]:
         """Get all open orders."""
-        return self._info.open_orders(self._address)
+        result = _retry(lambda: self._info.open_orders(self._address))
+        return result if result is not None else []
 
     def get_positions(self, symbol: str) -> list[dict]:
         """Get current positions."""
-        state = self._info.user_state(self._address)
+        state = _retry(lambda: self._info.user_state(self._address))
+        if state is None:
+            log.error("get_positions_failed", error="user_state returned None")
+            return []
         positions = []
         for pos in state.get("assetPositions", []):
             p = pos.get("position", pos)
@@ -319,12 +359,15 @@ class HyperliquidClient:
         start_time = start or 0
         end_time = end or 0
 
-        raw = self._info.candles_snapshot(
+        raw = _retry(lambda: self._info.candles_snapshot(
             name=coin,
             interval=interval,
             startTime=start_time,
             endTime=end_time,
-        )
+        ))
+        if not raw:
+            log.error("get_klines_failed", error="candles_snapshot returned None/empty")
+            return []
 
         candles = []
         for item in raw[-limit:]:  # Respect limit
@@ -347,7 +390,10 @@ class HyperliquidClient:
         coin = self._settings.coin
 
         # Get all mid prices
-        all_mids = self._info.all_mids()
+        all_mids = _retry(lambda: self._info.all_mids())
+        if all_mids is None:
+            log.error("get_tickers_failed", error="all_mids returned None")
+            return {"lastPrice": "0", "symbol": coin}
         mid_price = float(all_mids.get(coin, 0))
 
         return {
@@ -358,10 +404,10 @@ class HyperliquidClient:
     def get_funding_rate(self, symbol: str) -> dict:
         """Get current funding rate info."""
         coin = self._settings.coin
-        state = self._info.meta_and_asset_ctxs()
+        state = _retry(lambda: self._info.meta_and_asset_ctxs())
 
         # state is [meta, [asset_ctx, ...]]
-        if len(state) >= 2:
+        if state and len(state) >= 2:
             meta = state[0]
             ctxs = state[1]
             for i, asset in enumerate(meta.get("universe", [])):
@@ -400,7 +446,11 @@ class HyperliquidClient:
 
     def get_user_fills(self, limit: int = 100) -> list[dict]:
         """Get recent fills/trades for the user."""
-        return self._info.user_fills(self._address)[:limit]
+        fills = _retry(lambda: self._info.user_fills(self._address))
+        if fills is None:
+            log.error("get_user_fills_failed", error="user_fills returned None")
+            return []
+        return fills[:limit]
 
     def close(self) -> None:
         """Close all connections."""
