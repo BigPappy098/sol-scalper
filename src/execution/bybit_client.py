@@ -151,12 +151,14 @@ class HyperliquidClient:
     def get_equity(self) -> float:
         """Get total account value in USD."""
         state = self.get_account_balance()
-        return float(state.get("marginSummary", {}).get("accountValue", 0))
+        summary = state.get("crossMarginSummary") or state.get("marginSummary") or {}
+        return float(summary.get("accountValue", 0))
 
     def get_available_margin(self) -> float:
         """Get available margin for new trades."""
         state = self.get_account_balance()
-        return float(state.get("marginSummary", {}).get("totalRawUsd", 0))
+        summary = state.get("crossMarginSummary") or state.get("marginSummary") or {}
+        return float(summary.get("totalRawUsd", 0))
 
     def place_order(
         self,
