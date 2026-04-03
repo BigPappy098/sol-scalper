@@ -1,5 +1,5 @@
 # Exchange
-hyperliquid-python-sdk>=0.4.0,<0.10.0
+hyperliquid-python-sdk==0.13.0
 eth-account>=0.11.0
 
 # Data
