@@ -31,24 +31,30 @@ class Database:
         if self._pool:
             await self._pool.close()
 
+    def _ensure_pool(self) -> asyncpg.Pool:
+        """Return the pool or raise if not connected."""
+        if self._pool is None:
+            raise RuntimeError("Database not connected — call connect() first")
+        return self._pool
+
     async def execute(self, query: str, *args: Any) -> str:
         """Execute a query."""
-        async with self._pool.acquire() as conn:
+        async with self._ensure_pool().acquire() as conn:
             return await conn.execute(query, *args)
 
     async def fetch(self, query: str, *args: Any) -> list[asyncpg.Record]:
         """Fetch multiple rows."""
-        async with self._pool.acquire() as conn:
+        async with self._ensure_pool().acquire() as conn:
             return await conn.fetch(query, *args)
 
     async def fetchrow(self, query: str, *args: Any) -> asyncpg.Record | None:
         """Fetch a single row."""
-        async with self._pool.acquire() as conn:
+        async with self._ensure_pool().acquire() as conn:
             return await conn.fetchrow(query, *args)
 
     async def fetchval(self, query: str, *args: Any) -> Any:
         """Fetch a single value."""
-        async with self._pool.acquire() as conn:
+        async with self._ensure_pool().acquire() as conn:
             return await conn.fetchval(query, *args)
 
     # --- Candle Operations ---
@@ -83,7 +89,7 @@ class Database:
         """Insert multiple candles efficiently."""
         if not candles:
             return
-        async with self._pool.acquire() as conn:
+        async with self._ensure_pool().acquire() as conn:
             await conn.executemany(
                 """
                 INSERT INTO candles (ts, timeframe, open, high, low, close, volume, trade_count, vwap)
@@ -303,7 +309,7 @@ class Database:
 
     async def activate_model(self, model_id: int, model_name: str) -> None:
         """Set a model as active (deactivate others with same name)."""
-        async with self._pool.acquire() as conn:
+        async with self._ensure_pool().acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
                     "UPDATE models SET is_active = FALSE WHERE model_name = $1",

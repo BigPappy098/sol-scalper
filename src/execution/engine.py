@@ -82,8 +82,11 @@ class ExecutionEngine:
         # Update equity from exchange
         try:
             equity = self._client.get_equity()
-            self._risk.update_equity(equity)
-            log.info("initial_equity", equity=equity)
+            if equity > 0:
+                self._risk.update_equity(equity)
+                log.info("initial_equity", equity=equity)
+            else:
+                log.warning("engine_equity_zero", equity=equity)
         except Exception as e:
             log.error("equity_fetch_failed", error=str(e))
 

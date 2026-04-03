@@ -28,6 +28,12 @@ class EventBus:
         if self._redis:
             await self._redis.aclose()
 
+    def _ensure_redis(self) -> redis.Redis:
+        """Return the Redis client or raise if not connected."""
+        if self._redis is None:
+            raise RuntimeError("EventBus not connected — call connect() first")
+        return self._redis
+
     async def publish(self, stream: str, data: dict[str, Any]) -> str:
         """Publish an event to a stream. Returns the message ID."""
         # Serialize nested objects to JSON strings
@@ -38,7 +44,7 @@ class EventBus:
             else:
                 flat[k] = str(v)
 
-        msg_id = await self._redis.xadd(stream, flat, maxlen=10000)
+        msg_id = await self._ensure_redis().xadd(stream, flat, maxlen=10000)
         return msg_id
 
     async def subscribe(
@@ -48,7 +54,7 @@ class EventBus:
         current_id = last_id
         while True:
             try:
-                results = await self._redis.xread(
+                results = await self._ensure_redis().xread(
                     {stream: current_id}, block=block_ms, count=100
                 )
                 if results:
@@ -69,7 +75,7 @@ class EventBus:
 
     async def get_latest(self, stream: str, count: int = 1) -> list[dict]:
         """Get the latest N messages from a stream."""
-        results = await self._redis.xrevrange(stream, count=count)
+        results = await self._ensure_redis().xrevrange(stream, count=count)
         messages = []
         for _msg_id, data in results:
             parsed = {}

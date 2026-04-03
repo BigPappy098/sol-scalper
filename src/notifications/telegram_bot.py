@@ -198,11 +198,12 @@ class TelegramNotifier:
     async def _cmd_pnl(self, update, context) -> None:
         """Handle /pnl command."""
         exposure = self._risk_manager.get_exposure() if self._risk_manager else {}
+        peak = f"${self._risk_manager._peak_equity:.2f}" if self._risk_manager else "N/A"
         msg = (
             f"<b>PnL</b>\n"
             f"Daily: ${exposure.get('daily_pnl', 0):.2f}\n"
             f"Equity: ${exposure.get('equity', 0):.2f}\n"
-            f"Peak Equity: ${self._risk_manager._peak_equity:.2f}" if self._risk_manager else "N/A"
+            f"Peak Equity: {peak}"
         )
         await update.message.reply_text(msg, parse_mode="HTML")
 
