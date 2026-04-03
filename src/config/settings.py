@@ -98,9 +98,18 @@ class Settings(BaseSettings):
 
     @property
     def hl_base_url(self) -> str:
-        """Hyperliquid API base URL (testnet or mainnet)."""
+        """Hyperliquid API base URL for order execution."""
         if self.is_paper:
             return "https://api.hyperliquid-testnet.xyz"
+        return "https://api.hyperliquid.xyz"
+
+    @property
+    def hl_data_url(self) -> str:
+        """Hyperliquid API base URL for market data — always mainnet.
+
+        Testnet returns broken spot_meta that crashes the SDK, and paper
+        trading should use real market prices anyway.
+        """
         return "https://api.hyperliquid.xyz"
 
     def get_strategy_config(self, strategy_name: str) -> dict:

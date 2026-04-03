@@ -43,21 +43,23 @@ class HyperliquidClient:
 
     def connect(self) -> None:
         """Initialize HTTP connections (Exchange + Info)."""
-        base_url = self._settings.hl_base_url
+        data_url = self._settings.hl_data_url  # always mainnet
 
         # Create wallet from private key
         self._wallet = eth_account.Account.from_key(self._settings.hl_private_key)
         self._address = self._wallet.address
 
-        # Exchange client (for placing orders, setting leverage)
-        self._exchange = Exchange(
-            wallet=self._wallet,
-            base_url=base_url,
-            account_address=self._address,
-        )
+        # Exchange client only for live trading — testnet spot_meta is broken
+        # and paper orders are simulated locally anyway
+        if not self._settings.is_paper:
+            self._exchange = Exchange(
+                wallet=self._wallet,
+                base_url=data_url,
+                account_address=self._address,
+            )
 
-        # Info client (for reading data — no wallet needed)
-        self._info = Info(base_url, skip_ws=True)
+        # Info client always uses mainnet for real market data
+        self._info = Info(data_url, skip_ws=True)
 
         # Load asset metadata
         self._load_meta()
@@ -65,8 +67,8 @@ class HyperliquidClient:
         log.info(
             "hyperliquid_connected",
             address=self._address,
-            testnet=self._settings.is_paper,
-            base_url=base_url,
+            paper=self._settings.is_paper,
+            data_url=data_url,
         )
 
     def _load_meta(self) -> None:
@@ -93,10 +95,9 @@ class HyperliquidClient:
         callbacks: dict mapping channel type to callback function.
             e.g. {"trade": on_trade, "orderbook": on_orderbook, "kline": on_kline}
         """
-        base_url = self._settings.hl_base_url
         coin = self._settings.coin
 
-        self._info_ws = Info(base_url, skip_ws=False)
+        self._info_ws = Info(self._settings.hl_data_url, skip_ws=False)
         self._ws_running = True
 
         if "trade" in callbacks:
@@ -125,10 +126,8 @@ class HyperliquidClient:
 
         Hyperliquid uses a 'userEvents' subscription keyed by address.
         """
-        base_url = self._settings.hl_base_url
-
         if self._info_ws is None:
-            self._info_ws = Info(base_url, skip_ws=False)
+            self._info_ws = Info(self._settings.hl_data_url, skip_ws=False)
 
         if "execution" in callbacks or "position" in callbacks:
             def _user_event_handler(msg):
@@ -188,6 +187,15 @@ class HyperliquidClient:
             order_link_id: Client order ID (cloid)
         """
         coin = self._settings.coin
+
+        if self._settings.is_paper:
+            # Simulate fill at current mid price
+            all_mids = self._info.all_mids()
+            mid = float(all_mids.get(coin, 0))
+            import uuid as _uuid
+            log.info("paper_order_simulated", coin=coin, side=side, qty=qty, price=mid)
+            return {"orderId": str(_uuid.uuid4()), "avgPrice": str(mid), "filledQty": str(qty), "paper": True}
+
         is_buy = side.lower() in ("long", "buy")
         sz_decimals = self._get_sz_decimals(coin)
 
@@ -288,6 +296,9 @@ class HyperliquidClient:
 
     def set_leverage(self, symbol: str, leverage: float) -> dict:
         """Set leverage for the coin."""
+        if self._settings.is_paper:
+            log.info("paper_leverage_skipped", leverage=leverage)
+            return {}
         coin = self._settings.coin
         result = self._exchange.update_leverage(
             leverage=int(leverage),
