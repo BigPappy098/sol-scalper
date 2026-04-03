@@ -42,6 +42,8 @@ WORKDIR /root/sol-scalper
 # Copy everything into the image
 COPY . /root/sol-scalper/
 
+COPY requirements.txt
+
 # --- Install Python dependencies ---
 RUN pip3 install --no-cache-dir -r requirements.txt
 
