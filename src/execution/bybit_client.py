@@ -54,6 +54,8 @@ class HyperliquidClient:
         self._address: str = ""
         self._callbacks: dict[str, list[Callable]] = {}
         self._ws_running = False
+        self._public_ws_callbacks: dict[str, Any] = {}
+        self._private_ws_callbacks: dict[str, Any] = {}
         self._meta: dict = {}  # Asset metadata (sz_decimals, etc.)
         self._asset_index: dict[str, int] = {}  # coin -> index mapping
 
@@ -186,12 +188,80 @@ class HyperliquidClient:
                 return asset.get("szDecimals", 2)
         return 2
 
+    def _create_ws_subscriptions(self, info_ws: Info) -> None:
+        """Subscribe to all saved channels on the given Info WS instance."""
+        coin = self._settings.coin
+        for channel, cb in self._public_ws_callbacks.items():
+            if channel == "trade":
+                info_ws.subscribe({"type": "trades", "coin": coin}, cb)
+            elif channel == "orderbook":
+                info_ws.subscribe({"type": "l2Book", "coin": coin}, cb)
+            elif channel == "kline":
+                info_ws.subscribe({"type": "candle", "coin": coin, "interval": "1m"}, cb)
+            log.info("ws_subscribed", channel=channel, coin=coin)
+
+        for channel, cb in self._private_ws_callbacks.items():
+            if channel == "userEvents":
+                info_ws.subscribe({"type": "userEvents", "user": self._address}, cb)
+                log.info("ws_subscribed", channel="userEvents", address=self._address)
+
+    def _reconnect_ws(self) -> None:
+        """Tear down old WS and create a fresh one with all subscriptions."""
+        log.warning("ws_reconnecting")
+        # Close old connection
+        if self._info_ws:
+            try:
+                self._info_ws.ws_manager.close()
+            except Exception:
+                pass
+            self._info_ws = None
+
+        try:
+            self._info_ws = Info(self._settings.hl_base_url, skip_ws=False)
+            self._create_ws_subscriptions(self._info_ws)
+            log.info("ws_reconnected")
+        except Exception as e:
+            log.error("ws_reconnect_failed", error=str(e))
+            self._info_ws = None
+
+    def _ws_health_monitor(self) -> None:
+        """Background thread that checks WS health and reconnects if dead."""
+        while self._ws_running:
+            time.sleep(10)  # Check every 10 seconds
+            if not self._ws_running:
+                break
+            if self._info_ws is None:
+                self._reconnect_ws()
+                continue
+            try:
+                ws = getattr(self._info_ws, "ws_manager", None)
+                if ws is None:
+                    self._reconnect_ws()
+                    continue
+                # Check if the underlying websocket is still open
+                inner_ws = getattr(ws, "ws", None)
+                if inner_ws is None or not getattr(inner_ws, "connected", True):
+                    log.warning("ws_dead_detected", reason="ws not connected")
+                    self._reconnect_ws()
+                    continue
+                # Also check if the ws sock is gone (another sign of death)
+                sock = getattr(inner_ws, "sock", None)
+                if sock is None:
+                    log.warning("ws_dead_detected", reason="sock is None")
+                    self._reconnect_ws()
+            except Exception as e:
+                log.error("ws_health_check_error", error=str(e))
+                self._reconnect_ws()
+
     def start_public_ws(self, callbacks: dict[str, Any]) -> None:
         """Start public WebSocket for market data.
 
         callbacks: dict mapping channel type to callback function.
             e.g. {"trade": on_trade, "orderbook": on_orderbook, "kline": on_kline}
         """
+        # Store callbacks for reconnection
+        self._public_ws_callbacks = dict(callbacks)
+
         base_url = self._settings.hl_base_url
         coin = self._settings.coin
 
@@ -219,6 +289,10 @@ class HyperliquidClient:
             )
             log.info("ws_subscribed", channel="candle_1m", coin=coin)
 
+        # Start health monitor thread
+        monitor = threading.Thread(target=self._ws_health_monitor, daemon=True)
+        monitor.start()
+
     def start_private_ws(self, callbacks: dict[str, Any]) -> None:
         """Start private WebSocket for user fills and order updates.
 
@@ -234,6 +308,9 @@ class HyperliquidClient:
                     callbacks["execution"](msg)
                 if "position" in callbacks:
                     callbacks["position"](msg)
+
+            # Store for reconnection
+            self._private_ws_callbacks["userEvents"] = _user_event_handler
 
             self._info_ws.subscribe(
                 {"type": "userEvents", "user": self._address},
