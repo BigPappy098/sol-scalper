@@ -153,15 +153,14 @@ class HyperliquidClient:
                 spot_usdc=spot_usdc,
             )
 
-            # 3. Warn if funds are in spot but not perps
-            if equity_cross == 0 and equity_margin == 0 and spot_usdc > 0:
-                log.error(
-                    "funds_in_spot_not_perps",
-                    spot_usdc=spot_usdc,
-                    perps_equity=equity_cross,
-                    hint="Your USDC is in the spot wallet, not the perps clearinghouse. "
-                         "Transfer it via the Hyperliquid UI: Spot → Perps transfer.",
-                )
+            # 3. Report total equity (unified mode: spot USDC is usable for perps margin)
+            total = equity_cross + spot_usdc
+            log.info(
+                "health_check_total",
+                perps_equity=equity_cross,
+                spot_usdc=spot_usdc,
+                total_equity=total,
+            )
 
         except Exception as e:
             log.error("health_check_failed", error=str(e))
@@ -249,51 +248,38 @@ class HyperliquidClient:
         return _retry(lambda: self._info.user_state(self._address))
 
     def get_equity(self) -> float:
-        """Get total account value in USD."""
-        state = self.get_account_balance()
-        if state is None:
-            log.warning("get_equity_sdk_failed", hint="Falling back to direct API call")
-            return self._get_equity_direct()
+        """Get total account value in USD (perps + spot USDC for unified accounts)."""
+        equity = 0.0
 
-        summary = state.get("crossMarginSummary") or state.get("marginSummary") or {}
-        equity = float(summary.get("accountValue", 0))
+        # 1. Check perps clearinghouse
+        state = self.get_account_balance()
+        if state is not None:
+            summary = state.get("crossMarginSummary") or state.get("marginSummary") or {}
+            equity = float(summary.get("accountValue", 0))
+
+        # 2. Add spot USDC balance (unified mode: spot USDC is available for perps margin)
+        spot_usdc = self._get_spot_usdc()
+        if spot_usdc > 0:
+            equity += spot_usdc
+            log.info("equity_includes_spot", perps_equity=equity - spot_usdc, spot_usdc=spot_usdc, total=equity)
 
         if equity == 0:
-            # SDK returned 0 — log full response for debugging, then try direct API
-            log.warning("get_equity_sdk_zero",
-                        address=self._address,
-                        state_keys=list(state.keys()),
-                        cross_summary=state.get("crossMarginSummary"),
-                        margin_summary=state.get("marginSummary"),
-                        withdrawable=state.get("withdrawable"),
-                        asset_positions=len(state.get("assetPositions", [])))
-            direct_equity = self._get_equity_direct()
-            if direct_equity > 0:
-                log.info("equity_recovered_via_direct_api", equity=direct_equity)
-                return direct_equity
+            log.warning("get_equity_zero", address=self._address)
 
         return equity
 
-    def _get_equity_direct(self) -> float:
-        """Fallback: get equity via direct HTTP POST, bypassing SDK."""
-        import requests as _requests
+    def _get_spot_usdc(self) -> float:
+        """Get USDC balance from spot wallet."""
         try:
-            resp = _requests.post(
-                f"{self._settings.hl_base_url}/info",
-                json={"type": "clearinghouseState", "user": self._address},
-                timeout=10,
-            )
-            raw = resp.json()
-            summary = raw.get("crossMarginSummary") or raw.get("marginSummary") or {}
-            equity = float(summary.get("accountValue", 0))
-            log.info("direct_api_equity",
-                     address=self._address,
-                     equity=equity,
-                     http_status=resp.status_code)
-            return equity
+            spot_state = _retry(lambda: self._info.spot_user_state(self._address))
+            if spot_state is None:
+                return 0.0
+            for bal in spot_state.get("balances", []):
+                if bal.get("coin") == "USDC":
+                    return float(bal.get("total", 0))
         except Exception as e:
-            log.error("direct_equity_failed", error=str(e))
-            return 0.0
+            log.error("spot_usdc_check_failed", error=str(e))
+        return 0.0
 
     def get_available_margin(self) -> float:
         """Get available margin for new trades."""
