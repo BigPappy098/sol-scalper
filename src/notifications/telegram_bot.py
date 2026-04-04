@@ -107,20 +107,33 @@ class TelegramNotifier:
                 log.debug("telegram_stop_cleanup", error=str(e))
         self._running = False
 
-    async def send_message(self, text: str) -> None:
-        """Send a message to the configured chat."""
+    async def send_message(self, text: str, retries: int = 3) -> None:
+        """Send a message to the configured chat with retries on NetworkError."""
         chat_id = self._settings.telegram_chat_id
         if not chat_id or not self._app:
             return
 
-        try:
-            await self._app.bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                parse_mode="HTML",
-            )
-        except Exception as e:
-            log.error("telegram_send_failed", error=str(e))
+        from telegram.error import NetworkError
+
+        for attempt in range(retries):
+            try:
+                await self._app.bot.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    parse_mode="HTML",
+                )
+                return
+            except Exception as e:
+                # If it's a network error, we can retry. Otherwise, we probably shouldn't.
+                if isinstance(e, NetworkError) and attempt < retries - 1:
+                    wait_time = (attempt + 1) * 2
+                    log.warning("telegram_network_error_retrying", 
+                                attempt=attempt + 1, wait=wait_time)
+                    await asyncio.sleep(wait_time)
+                    continue
+                
+                log.error("telegram_send_failed", error=str(e), attempt=attempt + 1)
+                break
 
     async def notify_trade_entry(self, trade_data: dict) -> None:
         """Send trade entry notification."""

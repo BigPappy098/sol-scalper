@@ -49,6 +49,8 @@ class _RobustWebsocketManager(WebsocketManager):
         self.ws_ready = False
         self.queued_subscriptions = []
         self.active_subscriptions = defaultdict(list)
+        # We store the original subscription dicts to reconstruct accurately on reconnect
+        self._subscription_dicts = {}  # identifier -> subscription_dict
         self._base_url = base_url
         self._ws_url = "ws" + base_url[len("http"):] + "/ws"
         self._stop_event = threading.Event()
@@ -60,6 +62,13 @@ class _RobustWebsocketManager(WebsocketManager):
             on_close=self._on_close,
         )
         self.ping_sender = threading.Thread(target=self.send_ping, daemon=True)
+
+    def subscribe(self, subscription: dict, callback: Callable, subscription_id: int | None = None) -> int:
+        """Override subscribe to save the original dict."""
+        identifier = subscription_to_identifier(subscription)
+        if identifier:
+            self._subscription_dicts[identifier] = subscription
+        return super().subscribe(subscription, callback, subscription_id)
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -106,13 +115,16 @@ class _RobustWebsocketManager(WebsocketManager):
 
     def on_open(self, _ws):
         """Re-subscribe to all channels after (re)connect."""
-        log.info("ws_opened")
+        log.info("ws_opened", identifiers=list(self.active_subscriptions.keys()))
         self.ws_ready = True
         # Re-subscribe existing active subscriptions
         for identifier, subs in list(self.active_subscriptions.items()):
             for active_sub in subs:
-                # Reconstruct the subscription dict from the identifier
-                sub_dict = self._identifier_to_subscription(identifier)
+                # Reconstruct the subscription dict from stored map OR identifier
+                sub_dict = self._subscription_dicts.get(identifier)
+                if not sub_dict:
+                    sub_dict = self._identifier_to_subscription(identifier)
+
                 if sub_dict:
                     try:
                         self.ws.send(json.dumps({
@@ -146,8 +158,10 @@ class _RobustWebsocketManager(WebsocketManager):
     # -- helpers ------------------------------------------------------------
 
     @staticmethod
-    def _identifier_to_subscription(identifier: str) -> dict | None:
+    def _identifier_to_subscription(identifier: str | None) -> dict | None:
         """Reverse map an identifier back to a subscription dict."""
+        if identifier is None:
+            return None
         if identifier == "allMids":
             return {"type": "allMids"}
         if identifier == "userEvents":
