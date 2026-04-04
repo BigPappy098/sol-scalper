@@ -65,21 +65,25 @@ class HyperliquidClient:
         """Initialize HTTP connections (Exchange + Info)."""
         base_url = self._settings.hl_base_url
 
-        # Create wallet from private key — derives the wallet address
+        # Create wallet from private key (API wallet — used for signing)
         self._wallet = eth_account.Account.from_key(self._settings.hl_private_key)
-        self._address = self._wallet.address
+        signing_addr = self._wallet.address
 
-        # Sanity check: warn if HL_WALLET_ADDRESS doesn't match derived
+        # HL_WALLET_ADDRESS = main wallet where funds live.
+        # API wallet signs on its behalf but has no funds itself.
         configured_addr = self._settings.hl_wallet_address
-        if configured_addr and configured_addr.lower() != self._address.lower():
-            log.error(
-                "address_mismatch",
-                derived=self._address,
-                configured=configured_addr,
-                hint="HL_PRIVATE_KEY does not derive to HL_WALLET_ADDRESS — check your private key!",
+        if configured_addr and configured_addr.lower() != signing_addr.lower():
+            self._address = configured_addr
+            log.info(
+                "api_wallet_setup",
+                api_wallet=signing_addr,
+                main_wallet=configured_addr,
+                hint="API wallet signs trades; main wallet holds funds",
             )
+        else:
+            self._address = signing_addr
 
-        # Exchange client (for placing orders, setting leverage)
+        # Exchange client — account_address is the main wallet we trade on behalf of
         self._exchange = Exchange(
             wallet=self._wallet,
             base_url=base_url,

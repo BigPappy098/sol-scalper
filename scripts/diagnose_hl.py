@@ -36,10 +36,14 @@ def main():
         wallet = eth_account.Account.from_key(pk)
         derived_addr = wallet.address
         print(f"\n[2] Wallet")
-        print(f"  Derived address  = {derived_addr}")
+        print(f"  Derived (API wallet) = {derived_addr}")
         if configured_addr and configured_addr.lower() != derived_addr.lower():
-            print(f"  ERROR: HL_WALLET_ADDRESS ({configured_addr}) does not match derived address ({derived_addr})")
-            print(f"  Your HL_PRIVATE_KEY does not correspond to HL_WALLET_ADDRESS — check your key!")
+            print(f"  API wallet setup detected:")
+            print(f"    API wallet (signs):    {derived_addr}")
+            print(f"    Main wallet (funds):   {configured_addr}")
+            print(f"  Bot will query main wallet for balance, sign with API wallet key.")
+            # Use main wallet address for all balance queries below
+            derived_addr = configured_addr
         elif configured_addr:
             print(f"  OK: configured address matches derived address")
     except Exception as e:
