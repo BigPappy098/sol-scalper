@@ -4,20 +4,179 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 import time
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Callable
 
 import eth_account
+import websocket as _ws_module
 from hyperliquid.exchange import Exchange
 from hyperliquid.info import Info
 from hyperliquid.utils import constants
+from hyperliquid.websocket_manager import (
+    ActiveSubscription,
+    WebsocketManager,
+    subscription_to_identifier,
+    ws_msg_to_identifier,
+)
 
 from src.config.settings import get_settings
 from src.utils.logging import get_logger
 
 log = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Patched WebsocketManager — the stock SDK version (0.5.0) has two fatal bugs:
+#   1. send_ping runs `while True` with no try/except — one failure kills it.
+#   2. run_forever() exits on disconnect with no reconnect.
+# This subclass fixes both by adding error handling and auto-reconnect.
+# ---------------------------------------------------------------------------
+
+class _RobustWebsocketManager(WebsocketManager):
+    """Drop-in replacement for the SDK WebsocketManager with reconnection."""
+
+    _PING_INTERVAL = 50   # seconds between pings (same as SDK)
+    _RECONNECT_DELAY = 5  # seconds to wait before reconnecting
+
+    def __init__(self, base_url):
+        # Bypass parent __init__ — we replicate it with our additions
+        threading.Thread.__init__(self, daemon=True)
+        self.subscription_id_counter = 0
+        self.ws_ready = False
+        self.queued_subscriptions = []
+        self.active_subscriptions = defaultdict(list)
+        self._base_url = base_url
+        self._ws_url = "ws" + base_url[len("http"):] + "/ws"
+        self._stop_event = threading.Event()
+        self.ws = _ws_module.WebSocketApp(
+            self._ws_url,
+            on_message=self.on_message,
+            on_open=self.on_open,
+            on_error=self._on_error,
+            on_close=self._on_close,
+        )
+        self.ping_sender = threading.Thread(target=self.send_ping, daemon=True)
+
+    # -- lifecycle ----------------------------------------------------------
+
+    def run(self):
+        """Main thread: run WS with automatic reconnection."""
+        self.ping_sender.start()
+        while not self._stop_event.is_set():
+            try:
+                log.info("ws_connecting", url=self._ws_url)
+                self.ws.run_forever(
+                    ping_interval=0,  # we handle pings ourselves
+                )
+            except Exception as e:
+                log.error("ws_run_forever_error", error=str(e))
+            # Connection dropped — reconnect unless stopped
+            if self._stop_event.is_set():
+                break
+            self.ws_ready = False
+            log.warning("ws_disconnected_reconnecting",
+                        delay=self._RECONNECT_DELAY)
+            time.sleep(self._RECONNECT_DELAY)
+            # Build a fresh WebSocketApp but keep our subscriptions
+            self.ws = _ws_module.WebSocketApp(
+                self._ws_url,
+                on_message=self.on_message,
+                on_open=self.on_open,
+                on_error=self._on_error,
+                on_close=self._on_close,
+            )
+
+    def send_ping(self):
+        """Send pings with proper error handling."""
+        while not self._stop_event.is_set():
+            self._stop_event.wait(self._PING_INTERVAL)
+            if self._stop_event.is_set():
+                break
+            if not self.ws_ready:
+                continue
+            try:
+                self.ws.send(json.dumps({"method": "ping"}))
+            except Exception as e:
+                log.warning("ws_ping_failed", error=str(e))
+                # Don't crash — run() loop will handle reconnection
+
+    def on_open(self, _ws):
+        """Re-subscribe to all channels after (re)connect."""
+        log.info("ws_opened")
+        self.ws_ready = True
+        # Re-subscribe existing active subscriptions
+        for identifier, subs in list(self.active_subscriptions.items()):
+            for active_sub in subs:
+                # Reconstruct the subscription dict from the identifier
+                sub_dict = self._identifier_to_subscription(identifier)
+                if sub_dict:
+                    try:
+                        self.ws.send(json.dumps({
+                            "method": "subscribe",
+                            "subscription": sub_dict,
+                        }))
+                    except Exception as e:
+                        log.error("ws_resubscribe_failed",
+                                  identifier=identifier, error=str(e))
+        # Also send queued ones (first connect)
+        for subscription, active_subscription in self.queued_subscriptions:
+            self.subscribe(subscription, active_subscription.callback,
+                           active_subscription.subscription_id)
+        self.queued_subscriptions.clear()
+
+    def _on_error(self, _ws, error):
+        log.warning("ws_error", error=str(error))
+
+    def _on_close(self, _ws, close_status_code, close_msg):
+        log.warning("ws_closed", status=close_status_code, msg=close_msg)
+        self.ws_ready = False
+
+    def close(self):
+        """Cleanly shut down."""
+        self._stop_event.set()
+        try:
+            self.ws.close()
+        except Exception:
+            pass
+
+    # -- helpers ------------------------------------------------------------
+
+    @staticmethod
+    def _identifier_to_subscription(identifier: str) -> dict | None:
+        """Reverse map an identifier back to a subscription dict."""
+        if identifier == "allMids":
+            return {"type": "allMids"}
+        if identifier == "userEvents":
+            return {"type": "userEvents"}  # user filled in by subscribe()
+        if identifier.startswith("l2Book:"):
+            coin = identifier.split(":", 1)[1].upper()
+            return {"type": "l2Book", "coin": coin}
+        if identifier.startswith("trades:"):
+            coin = identifier.split(":", 1)[1].upper()
+            return {"type": "trades", "coin": coin}
+        if identifier.startswith("candle:"):
+            parts = identifier.split(":")
+            coin = parts[1].upper() if len(parts) > 1 else ""
+            interval = parts[2] if len(parts) > 2 else "1m"
+            return {"type": "candle", "coin": coin, "interval": interval}
+        return None
+
+
+def _patched_info_init(self, base_url=None, skip_ws=False):
+    """Patched Info.__init__ that uses our robust WS manager."""
+    from hyperliquid.api import API
+    API.__init__(self, base_url)
+    if not skip_ws:
+        self.ws_manager = _RobustWebsocketManager(self.base_url)
+        self.ws_manager.start()
+
+
+# Apply the monkey-patch once at import time
+Info.__init__ = _patched_info_init
 
 
 def _retry(func, retries: int = 3, base_delay: float = 1.0):
@@ -54,8 +213,6 @@ class HyperliquidClient:
         self._address: str = ""
         self._callbacks: dict[str, list[Callable]] = {}
         self._ws_running = False
-        self._public_ws_callbacks: dict[str, Any] = {}
-        self._private_ws_callbacks: dict[str, Any] = {}
         self._meta: dict = {}  # Asset metadata (sz_decimals, etc.)
         self._asset_index: dict[str, int] = {}  # coin -> index mapping
 
@@ -188,80 +345,12 @@ class HyperliquidClient:
                 return asset.get("szDecimals", 2)
         return 2
 
-    def _create_ws_subscriptions(self, info_ws: Info) -> None:
-        """Subscribe to all saved channels on the given Info WS instance."""
-        coin = self._settings.coin
-        for channel, cb in self._public_ws_callbacks.items():
-            if channel == "trade":
-                info_ws.subscribe({"type": "trades", "coin": coin}, cb)
-            elif channel == "orderbook":
-                info_ws.subscribe({"type": "l2Book", "coin": coin}, cb)
-            elif channel == "kline":
-                info_ws.subscribe({"type": "candle", "coin": coin, "interval": "1m"}, cb)
-            log.info("ws_subscribed", channel=channel, coin=coin)
-
-        for channel, cb in self._private_ws_callbacks.items():
-            if channel == "userEvents":
-                info_ws.subscribe({"type": "userEvents", "user": self._address}, cb)
-                log.info("ws_subscribed", channel="userEvents", address=self._address)
-
-    def _reconnect_ws(self) -> None:
-        """Tear down old WS and create a fresh one with all subscriptions."""
-        log.warning("ws_reconnecting")
-        # Close old connection
-        if self._info_ws:
-            try:
-                self._info_ws.ws_manager.close()
-            except Exception:
-                pass
-            self._info_ws = None
-
-        try:
-            self._info_ws = Info(self._settings.hl_base_url, skip_ws=False)
-            self._create_ws_subscriptions(self._info_ws)
-            log.info("ws_reconnected")
-        except Exception as e:
-            log.error("ws_reconnect_failed", error=str(e))
-            self._info_ws = None
-
-    def _ws_health_monitor(self) -> None:
-        """Background thread that checks WS health and reconnects if dead."""
-        while self._ws_running:
-            time.sleep(10)  # Check every 10 seconds
-            if not self._ws_running:
-                break
-            if self._info_ws is None:
-                self._reconnect_ws()
-                continue
-            try:
-                ws = getattr(self._info_ws, "ws_manager", None)
-                if ws is None:
-                    self._reconnect_ws()
-                    continue
-                # Check if the underlying websocket is still open
-                inner_ws = getattr(ws, "ws", None)
-                if inner_ws is None or not getattr(inner_ws, "connected", True):
-                    log.warning("ws_dead_detected", reason="ws not connected")
-                    self._reconnect_ws()
-                    continue
-                # Also check if the ws sock is gone (another sign of death)
-                sock = getattr(inner_ws, "sock", None)
-                if sock is None:
-                    log.warning("ws_dead_detected", reason="sock is None")
-                    self._reconnect_ws()
-            except Exception as e:
-                log.error("ws_health_check_error", error=str(e))
-                self._reconnect_ws()
-
     def start_public_ws(self, callbacks: dict[str, Any]) -> None:
         """Start public WebSocket for market data.
 
         callbacks: dict mapping channel type to callback function.
             e.g. {"trade": on_trade, "orderbook": on_orderbook, "kline": on_kline}
         """
-        # Store callbacks for reconnection
-        self._public_ws_callbacks = dict(callbacks)
-
         base_url = self._settings.hl_base_url
         coin = self._settings.coin
 
@@ -289,10 +378,6 @@ class HyperliquidClient:
             )
             log.info("ws_subscribed", channel="candle_1m", coin=coin)
 
-        # Start health monitor thread
-        monitor = threading.Thread(target=self._ws_health_monitor, daemon=True)
-        monitor.start()
-
     def start_private_ws(self, callbacks: dict[str, Any]) -> None:
         """Start private WebSocket for user fills and order updates.
 
@@ -308,9 +393,6 @@ class HyperliquidClient:
                     callbacks["execution"](msg)
                 if "position" in callbacks:
                     callbacks["position"](msg)
-
-            # Store for reconnection
-            self._private_ws_callbacks["userEvents"] = _user_event_handler
 
             self._info_ws.subscribe(
                 {"type": "userEvents", "user": self._address},
