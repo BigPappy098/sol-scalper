@@ -69,6 +69,16 @@ class HyperliquidClient:
         self._wallet = eth_account.Account.from_key(self._settings.hl_private_key)
         self._address = self._wallet.address
 
+        # If HL_WALLET_ADDRESS is set and differs, warn (but always use derived)
+        configured_addr = self._settings.hl_wallet_address
+        if configured_addr and configured_addr.lower() != self._address.lower():
+            log.warning(
+                "address_mismatch",
+                derived=self._address,
+                configured=configured_addr,
+                hint="HL_PRIVATE_KEY derives a different address than HL_WALLET_ADDRESS. Using derived.",
+            )
+
         # Exchange client (for placing orders, setting leverage)
         self._exchange = Exchange(
             wallet=self._wallet,
@@ -88,6 +98,61 @@ class HyperliquidClient:
             testnet=self._settings.is_paper,
             base_url=base_url,
         )
+
+        # Health check: verify we can read the account and it has funds
+        self._health_check()
+
+    def _health_check(self) -> None:
+        """Verify API connectivity and account state after connect."""
+        import requests as _requests
+
+        try:
+            # Direct HTTP call to bypass any SDK issues
+            resp = _requests.post(
+                f"{self._settings.hl_base_url}/info",
+                json={"type": "clearinghouseState", "user": self._address},
+                timeout=10,
+            )
+            raw = resp.json()
+
+            cross = raw.get("crossMarginSummary", {})
+            margin = raw.get("marginSummary", {})
+            equity_cross = float(cross.get("accountValue", 0)) if cross else 0
+            equity_margin = float(margin.get("accountValue", 0)) if margin else 0
+            withdrawable = raw.get("withdrawable", "?")
+
+            log.info(
+                "health_check_direct_api",
+                address=self._address,
+                equity_cross=equity_cross,
+                equity_margin=equity_margin,
+                withdrawable=withdrawable,
+                response_keys=list(raw.keys()),
+                http_status=resp.status_code,
+            )
+
+            # Now test via SDK
+            sdk_state = self._info.user_state(self._address)
+            sdk_cross = (sdk_state or {}).get("crossMarginSummary", {})
+            sdk_equity = float(sdk_cross.get("accountValue", 0)) if sdk_cross else 0
+
+            log.info(
+                "health_check_sdk",
+                sdk_equity=sdk_equity,
+                sdk_state_is_none=sdk_state is None,
+                sdk_state_type=type(sdk_state).__name__,
+                sdk_keys=list(sdk_state.keys()) if isinstance(sdk_state, dict) else "N/A",
+            )
+
+            if equity_cross > 0 and sdk_equity == 0:
+                log.error(
+                    "sdk_equity_mismatch",
+                    direct_api_equity=equity_cross,
+                    sdk_equity=sdk_equity,
+                    hint="SDK user_state returns different result than direct API call",
+                )
+        except Exception as e:
+            log.error("health_check_failed", error=str(e))
 
     def _load_meta(self) -> None:
         """Load exchange metadata (asset specs, size decimals, etc.)."""
@@ -175,13 +240,39 @@ class HyperliquidClient:
         """Get total account value in USD."""
         state = self.get_account_balance()
         if state is None:
-            log.error("get_equity_failed", error="account balance returned None")
-            return 0.0
+            log.warning("get_equity_sdk_failed", hint="Falling back to direct API call")
+            return self._get_equity_direct()
+
         summary = state.get("crossMarginSummary") or state.get("marginSummary") or {}
         equity = float(summary.get("accountValue", 0))
-        log.debug("equity_fetched", equity=equity,
-                  source="crossMarginSummary" if state.get("crossMarginSummary") else "marginSummary")
+
+        if equity == 0:
+            # SDK returned 0 — try direct API as fallback
+            log.warning("get_equity_sdk_zero", state_keys=list(state.keys()),
+                        cross_summary=state.get("crossMarginSummary"),
+                        margin_summary=state.get("marginSummary"))
+            direct_equity = self._get_equity_direct()
+            if direct_equity > 0:
+                log.info("equity_recovered_via_direct_api", equity=direct_equity)
+                return direct_equity
+
         return equity
+
+    def _get_equity_direct(self) -> float:
+        """Fallback: get equity via direct HTTP POST, bypassing SDK."""
+        import requests as _requests
+        try:
+            resp = _requests.post(
+                f"{self._settings.hl_base_url}/info",
+                json={"type": "clearinghouseState", "user": self._address},
+                timeout=10,
+            )
+            raw = resp.json()
+            summary = raw.get("crossMarginSummary") or raw.get("marginSummary") or {}
+            return float(summary.get("accountValue", 0))
+        except Exception as e:
+            log.error("direct_equity_failed", error=str(e))
+            return 0.0
 
     def get_available_margin(self) -> float:
         """Get available margin for new trades."""
