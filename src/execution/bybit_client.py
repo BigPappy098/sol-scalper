@@ -65,21 +65,27 @@ class HyperliquidClient:
         """Initialize HTTP connections (Exchange + Info)."""
         base_url = self._settings.hl_base_url
 
-        # Create wallet from private key
+        # Create wallet from private key (used for signing)
         self._wallet = eth_account.Account.from_key(self._settings.hl_private_key)
-        self._address = self._wallet.address
+        derived_addr = self._wallet.address
 
-        # If HL_WALLET_ADDRESS is set and differs, warn (but always use derived)
+        # Use HL_WALLET_ADDRESS as the account address if set (agent wallet setup:
+        # private key signs, but funds/positions live on the main wallet address).
+        # Fall back to derived address if not set.
         configured_addr = self._settings.hl_wallet_address
-        if configured_addr and configured_addr.lower() != self._address.lower():
-            log.warning(
-                "address_mismatch",
-                derived=self._address,
-                configured=configured_addr,
-                hint="HL_PRIVATE_KEY derives a different address than HL_WALLET_ADDRESS. Using derived.",
+        if configured_addr and configured_addr.lower() != derived_addr.lower():
+            self._address = configured_addr
+            log.info(
+                "using_configured_wallet",
+                signing_address=derived_addr,
+                account_address=configured_addr,
+                hint="Agent wallet setup: signing with HL_PRIVATE_KEY, querying/trading on HL_WALLET_ADDRESS",
             )
+        else:
+            self._address = derived_addr
 
         # Exchange client (for placing orders, setting leverage)
+        # account_address tells the SDK which account to trade on behalf of
         self._exchange = Exchange(
             wallet=self._wallet,
             base_url=base_url,

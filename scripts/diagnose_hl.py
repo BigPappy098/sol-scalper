@@ -36,10 +36,14 @@ def main():
         wallet = eth_account.Account.from_key(pk)
         derived_addr = wallet.address
         print(f"\n[2] Wallet")
-        print(f"  Derived address  = {derived_addr}")
+        print(f"  Derived (signing) address = {derived_addr}")
         if configured_addr and configured_addr.lower() != derived_addr.lower():
-            print(f"  WARNING: HL_WALLET_ADDRESS ({configured_addr}) does not match derived address ({derived_addr})")
-            print(f"  The bot uses the DERIVED address from the private key, not HL_WALLET_ADDRESS.")
+            print(f"  Agent wallet setup detected:")
+            print(f"    Signing key derives:  {derived_addr}")
+            print(f"    Account (funds) addr: {configured_addr}")
+            print(f"  Bot will query/trade on HL_WALLET_ADDRESS, sign with HL_PRIVATE_KEY.")
+            # Use configured address for all account queries below
+            derived_addr = configured_addr
         elif configured_addr:
             print(f"  OK: configured address matches derived address")
     except Exception as e:
