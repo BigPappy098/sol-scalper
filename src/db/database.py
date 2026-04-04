@@ -22,9 +22,29 @@ class Database:
         self._pool: asyncpg.Pool | None = None
 
     async def connect(self) -> None:
-        """Create connection pool."""
+        """Create connection pool and run migrations if needed."""
         self._pool = await asyncpg.create_pool(self._dsn, min_size=2, max_size=10)
+        await self._run_migrations()
         log.info("database_connected")
+
+    async def _run_migrations(self) -> None:
+        """Run SQL migrations if tables don't exist yet."""
+        from pathlib import Path
+
+        pool = self._ensure_pool()
+        async with pool.acquire() as conn:
+            # Check if the candles table exists
+            exists = await conn.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'candles')"
+            )
+            if exists:
+                return
+
+            log.info("running_migrations")
+            migration_file = Path(__file__).parent / "migrations" / "001_init.sql"
+            sql = migration_file.read_text()
+            await conn.execute(sql)
+            log.info("migrations_complete")
 
     async def close(self) -> None:
         """Close connection pool."""

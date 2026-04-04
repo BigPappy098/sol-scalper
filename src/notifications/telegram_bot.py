@@ -98,9 +98,13 @@ class TelegramNotifier:
 
     async def stop(self) -> None:
         if self._app:
-            await self._app.updater.stop()
-            await self._app.stop()
-            await self._app.shutdown()
+            try:
+                if self._app.updater and self._app.updater.running:
+                    await self._app.updater.stop()
+                await self._app.stop()
+                await self._app.shutdown()
+            except Exception as e:
+                log.debug("telegram_stop_cleanup", error=str(e))
         self._running = False
 
     async def send_message(self, text: str) -> None:
