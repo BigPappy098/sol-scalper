@@ -36,14 +36,10 @@ def main():
         wallet = eth_account.Account.from_key(pk)
         derived_addr = wallet.address
         print(f"\n[2] Wallet")
-        print(f"  Derived (signing) address = {derived_addr}")
+        print(f"  Derived address  = {derived_addr}")
         if configured_addr and configured_addr.lower() != derived_addr.lower():
-            print(f"  Agent wallet setup detected:")
-            print(f"    Signing key derives:  {derived_addr}")
-            print(f"    Account (funds) addr: {configured_addr}")
-            print(f"  Bot will query/trade on HL_WALLET_ADDRESS, sign with HL_PRIVATE_KEY.")
-            # Use configured address for all account queries below
-            derived_addr = configured_addr
+            print(f"  ERROR: HL_WALLET_ADDRESS ({configured_addr}) does not match derived address ({derived_addr})")
+            print(f"  Your HL_PRIVATE_KEY does not correspond to HL_WALLET_ADDRESS — check your key!")
         elif configured_addr:
             print(f"  OK: configured address matches derived address")
     except Exception as e:
@@ -119,9 +115,34 @@ def main():
     except Exception as e:
         print(f"  user_state FAILED: {e}")
 
-    # 3c. Also try with configured address if different
+    # 3c. Check SPOT balance (separate from perps clearinghouse)
+    print(f"\n[5] Spot Balance (derived address: {derived_addr})")
+    try:
+        resp = requests.post(
+            f"{base_url}/info",
+            json={"type": "spotClearinghouseState", "user": derived_addr},
+            timeout=10,
+        )
+        spot = resp.json()
+        balances = spot.get("balances", [])
+        if balances:
+            for bal in balances:
+                coin = bal.get("coin", "?")
+                total = bal.get("total", "0")
+                print(f"    {coin}: {total}")
+            # Check if USDC is in spot but perps is empty
+            usdc_bal = next((b for b in balances if b.get("coin") == "USDC"), None)
+            if usdc_bal and float(usdc_bal.get("total", 0)) > 0 and equity_cross == 0:
+                print(f"\n  *** YOUR USDC IS IN SPOT, NOT PERPS! ***")
+                print(f"  *** Transfer from Spot → Perps in the Hyperliquid UI to enable trading. ***")
+        else:
+            print(f"    (no spot balances)")
+    except Exception as e:
+        print(f"  Spot check FAILED: {e}")
+
+    # 3e. Also try with configured address if different
     if configured_addr and configured_addr.lower() != derived_addr.lower():
-        print(f"\n[5] Account State (configured address: {configured_addr})")
+        print(f"\n[6] Account State (configured address: {configured_addr})")
         try:
             resp = requests.post(
                 f"{base_url}/info",
@@ -142,8 +163,8 @@ def main():
         except Exception as e:
             print(f"  FAILED: {e}")
 
-    # 3d. Also check the SDK's user_state method directly
-    print(f"\n[6] SDK user_state check")
+    # 3f. Also check the SDK's user_state method directly
+    print(f"\n[7] SDK user_state check")
     try:
         from hyperliquid.info import Info
         info = Info(base_url, skip_ws=True)

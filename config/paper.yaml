@@ -1,7 +1,6 @@
 # Paper trading overrides
 trading:
   mode: paper
-  paper_initial_equity: 10000  # Simulated starting balance when testnet account has $0
 
 logging:
   level: DEBUG

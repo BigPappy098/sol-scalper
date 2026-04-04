@@ -111,30 +111,16 @@ class TradingSystem:
             equity = self._client.get_equity()
             if equity > 0:
                 self._risk.update_equity(equity)
-                log.info("initial_equity", equity=equity, source="exchange")
-            elif self._settings.is_paper:
-                # Paper mode: use simulated balance when testnet account has $0
-                paper_equity = self._settings.yaml_config.get("trading", {}).get(
-                    "paper_initial_equity", 10000
-                )
-                self._risk.update_equity(float(paper_equity))
-                log.info("initial_equity", equity=paper_equity, source="paper_simulated",
-                         hint="Testnet account has $0 — using simulated paper balance")
+                log.info("initial_equity", equity=equity)
             else:
                 log.warning("equity_zero_or_missing", equity=equity,
-                            hint="Check HL_PRIVATE_KEY and HL_WALLET_ADDRESS are correct and account is funded")
+                            address=self._client.address,
+                            hint="Account returned $0 — check logs for direct_api_raw_response details")
                 self._risk.update_equity(0.0)
         except Exception as e:
             log.error("equity_fetch_failed", error=str(e),
                       hint="Check network connectivity and API credentials")
-            if self._settings.is_paper:
-                paper_equity = self._settings.yaml_config.get("trading", {}).get(
-                    "paper_initial_equity", 10000
-                )
-                self._risk.update_equity(float(paper_equity))
-                log.info("initial_equity", equity=paper_equity, source="paper_fallback")
-            else:
-                self._risk.update_equity(0.0)
+            self._risk.update_equity(0.0)
 
         # 3. Initialize feature store
         self._feature_store = FeatureStore(self._settings.get_feature_config())
@@ -383,18 +369,12 @@ class TradingSystem:
         """Periodically snapshot equity for tracking."""
         while self._running:
             try:
-                exchange_equity = self._client.get_equity()
-                if exchange_equity > 0:
-                    self._risk.update_equity(exchange_equity)
-                elif self._settings.is_paper:
-                    # Paper mode: keep using risk manager's tracked equity
-                    # (includes simulated PnL from trades) instead of resetting to 0
-                    pass
+                equity = self._client.get_equity()
+                if equity > 0:
+                    self._risk.update_equity(equity)
                 else:
-                    log.warning("equity_snapshot_zero", equity=exchange_equity)
+                    log.warning("equity_snapshot_zero", equity=equity)
 
-                # Always snapshot the risk manager's equity (real or simulated)
-                equity = self._risk.equity
                 await self._db.execute(
                     """
                     INSERT INTO equity_snapshots (ts, equity_usd, open_positions, daily_pnl)

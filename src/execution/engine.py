@@ -79,16 +79,14 @@ class ExecutionEngine:
             # May fail if already set
             log.debug("leverage_set_info", error=str(e))
 
-        # Update equity from exchange (only if it returns a real balance;
-        # otherwise keep whatever the risk manager already has — e.g. paper simulated)
+        # Update equity from exchange
         try:
             equity = self._client.get_equity()
             if equity > 0:
                 self._risk.update_equity(equity)
-                log.info("engine_equity", equity=equity, source="exchange")
+                log.info("initial_equity", equity=equity)
             else:
-                log.info("engine_equity", equity=self._risk.equity, source="existing",
-                         hint="Exchange returned 0 — keeping current risk manager equity")
+                log.warning("engine_equity_zero", equity=equity)
         except Exception as e:
             log.error("equity_fetch_failed", error=str(e))
 

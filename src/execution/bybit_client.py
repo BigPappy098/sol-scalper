@@ -65,27 +65,21 @@ class HyperliquidClient:
         """Initialize HTTP connections (Exchange + Info)."""
         base_url = self._settings.hl_base_url
 
-        # Create wallet from private key (used for signing)
+        # Create wallet from private key — derives the wallet address
         self._wallet = eth_account.Account.from_key(self._settings.hl_private_key)
-        derived_addr = self._wallet.address
+        self._address = self._wallet.address
 
-        # Use HL_WALLET_ADDRESS as the account address if set (agent wallet setup:
-        # private key signs, but funds/positions live on the main wallet address).
-        # Fall back to derived address if not set.
+        # Sanity check: warn if HL_WALLET_ADDRESS doesn't match derived
         configured_addr = self._settings.hl_wallet_address
-        if configured_addr and configured_addr.lower() != derived_addr.lower():
-            self._address = configured_addr
-            log.info(
-                "using_configured_wallet",
-                signing_address=derived_addr,
-                account_address=configured_addr,
-                hint="Agent wallet setup: signing with HL_PRIVATE_KEY, querying/trading on HL_WALLET_ADDRESS",
+        if configured_addr and configured_addr.lower() != self._address.lower():
+            log.error(
+                "address_mismatch",
+                derived=self._address,
+                configured=configured_addr,
+                hint="HL_PRIVATE_KEY does not derive to HL_WALLET_ADDRESS — check your private key!",
             )
-        else:
-            self._address = derived_addr
 
         # Exchange client (for placing orders, setting leverage)
-        # account_address tells the SDK which account to trade on behalf of
         self._exchange = Exchange(
             wallet=self._wallet,
             base_url=base_url,
@@ -113,7 +107,7 @@ class HyperliquidClient:
         import requests as _requests
 
         try:
-            # Direct HTTP call to bypass any SDK issues
+            # 1. Check perps clearinghouse balance
             resp = _requests.post(
                 f"{self._settings.hl_base_url}/info",
                 json={"type": "clearinghouseState", "user": self._address},
@@ -128,35 +122,43 @@ class HyperliquidClient:
             withdrawable = raw.get("withdrawable", "?")
 
             log.info(
-                "health_check_direct_api",
+                "health_check_perps",
                 address=self._address,
                 equity_cross=equity_cross,
                 equity_margin=equity_margin,
                 withdrawable=withdrawable,
-                response_keys=list(raw.keys()),
                 http_status=resp.status_code,
             )
 
-            # Now test via SDK
-            sdk_state = self._info.user_state(self._address)
-            sdk_cross = (sdk_state or {}).get("crossMarginSummary", {})
-            sdk_equity = float(sdk_cross.get("accountValue", 0)) if sdk_cross else 0
+            # 2. Check spot balance for USDC
+            spot_resp = _requests.post(
+                f"{self._settings.hl_base_url}/info",
+                json={"type": "spotClearinghouseState", "user": self._address},
+                timeout=10,
+            )
+            spot_raw = spot_resp.json()
+            spot_usdc = 0.0
+            for bal in spot_raw.get("balances", []):
+                if bal.get("coin") == "USDC":
+                    spot_usdc = float(bal.get("total", 0))
+                    break
 
             log.info(
-                "health_check_sdk",
-                sdk_equity=sdk_equity,
-                sdk_state_is_none=sdk_state is None,
-                sdk_state_type=type(sdk_state).__name__,
-                sdk_keys=list(sdk_state.keys()) if isinstance(sdk_state, dict) else "N/A",
+                "health_check_spot",
+                address=self._address,
+                spot_usdc=spot_usdc,
             )
 
-            if equity_cross > 0 and sdk_equity == 0:
+            # 3. Warn if funds are in spot but not perps
+            if equity_cross == 0 and equity_margin == 0 and spot_usdc > 0:
                 log.error(
-                    "sdk_equity_mismatch",
-                    direct_api_equity=equity_cross,
-                    sdk_equity=sdk_equity,
-                    hint="SDK user_state returns different result than direct API call",
+                    "funds_in_spot_not_perps",
+                    spot_usdc=spot_usdc,
+                    perps_equity=equity_cross,
+                    hint="Your USDC is in the spot wallet, not the perps clearinghouse. "
+                         "Transfer it via the Hyperliquid UI: Spot → Perps transfer.",
                 )
+
         except Exception as e:
             log.error("health_check_failed", error=str(e))
 
@@ -253,10 +255,14 @@ class HyperliquidClient:
         equity = float(summary.get("accountValue", 0))
 
         if equity == 0:
-            # SDK returned 0 — try direct API as fallback
-            log.warning("get_equity_sdk_zero", state_keys=list(state.keys()),
+            # SDK returned 0 — log full response for debugging, then try direct API
+            log.warning("get_equity_sdk_zero",
+                        address=self._address,
+                        state_keys=list(state.keys()),
                         cross_summary=state.get("crossMarginSummary"),
-                        margin_summary=state.get("marginSummary"))
+                        margin_summary=state.get("marginSummary"),
+                        withdrawable=state.get("withdrawable"),
+                        asset_positions=len(state.get("assetPositions", [])))
             direct_equity = self._get_equity_direct()
             if direct_equity > 0:
                 log.info("equity_recovered_via_direct_api", equity=direct_equity)
@@ -275,7 +281,12 @@ class HyperliquidClient:
             )
             raw = resp.json()
             summary = raw.get("crossMarginSummary") or raw.get("marginSummary") or {}
-            return float(summary.get("accountValue", 0))
+            equity = float(summary.get("accountValue", 0))
+            log.info("direct_api_equity",
+                     address=self._address,
+                     equity=equity,
+                     http_status=resp.status_code)
+            return equity
         except Exception as e:
             log.error("direct_equity_failed", error=str(e))
             return 0.0
