@@ -1,6 +1,6 @@
 # Exchange
 hyperliquid-python-sdk==0.5.0
-eth-account>=0.11.0
+eth-account>=0.8.0,<0.9.0
 
 # Data
 pandas>=2.2.0
