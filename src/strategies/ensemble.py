@@ -92,7 +92,10 @@ class StrategyEnsemble:
         if len(signals) == 1:
             signal = signals[0]
             strategy = self._strategies.get(signal.strategy_name)
-            if strategy and signal.confidence * strategy.weight >= self._min_combined_weight * 0.8:
+            # For multi-timeframe strategies, consensus is rare on a single candle.
+            # We allow a single strategy if its weighted confidence is at least 40% of the threshold.
+            if strategy and signal.confidence * strategy.weight >= self._min_combined_weight * 0.4:
+                log.debug("single_strategy_trade", strategy=signal.strategy_name, weight=strategy.weight)
                 return signal
 
         return None

@@ -13,7 +13,7 @@ from src.data.feature_store import FeatureStore
 from src.data.ingestion import DataIngestionService
 from src.data.schemas import Candle
 from src.db.database import Database
-from src.execution.bybit_client import HyperliquidClient
+from src.execution.hyperliquid_client import HyperliquidClient
 from src.execution.engine import ExecutionEngine
 from src.notifications.telegram_bot import TelegramNotifier
 from src.risk.manager import RiskManager
@@ -222,8 +222,15 @@ class TradingSystem:
             "candle_timeframes", ["1s", "5s", "15s", "1m", "5m"]
         )
 
-        # We process candles from the feature store on each event
-        async for _msg_id, candle_data in self._event_bus.subscribe("candles:15s"):
+        # Start a task for each timeframe to update features and run ensemble
+        for tf in timeframes:
+            asyncio.create_task(self._timeframe_processing_loop(tf))
+
+        log.info("all_timeframe_loops_started", timeframes=timeframes)
+
+    async def _timeframe_processing_loop(self, timeframe: str) -> None:
+        """Process candles for a specific timeframe."""
+        async for _msg_id, candle_data in self._event_bus.subscribe(f"candles:{timeframe}"):
             if not self._running:
                 break
 
@@ -255,6 +262,8 @@ class TradingSystem:
                 # Add current price to features for execution
                 if ob_features and ob_features.get("mid_price"):
                     features["price"] = ob_features["mid_price"]
+                else:
+                    features["price"] = candle.close
 
                 # Run ensemble
                 signal = self._ensemble.on_candle(candle, features, ob_features)
@@ -267,47 +276,11 @@ class TradingSystem:
                     await self._execution.execute_signal(signal)
 
             except Exception as e:
-                log.error("trading_loop_error", error=str(e))
-
-        # Also consume other timeframe candles for feature updates
-        asyncio.create_task(self._feature_update_loop("1s"))
-        asyncio.create_task(self._feature_update_loop("5s"))
-        asyncio.create_task(self._feature_update_loop("1m"))
-        asyncio.create_task(self._feature_update_loop("5m"))
+                log.error("timeframe_loop_error", timeframe=timeframe, error=str(e))
 
     async def _feature_update_loop(self, timeframe: str) -> None:
-        """Update features from candles at a specific timeframe."""
-        async for _msg_id, candle_data in self._event_bus.subscribe(f"candles:{timeframe}"):
-            if not self._running:
-                break
-            try:
-                candle = Candle(
-                    timestamp=datetime.fromisoformat(candle_data["timestamp"]),
-                    timeframe=candle_data["timeframe"],
-                    open=float(candle_data["open"]),
-                    high=float(candle_data["high"]),
-                    low=float(candle_data["low"]),
-                    close=float(candle_data["close"]),
-                    volume=float(candle_data["volume"]),
-                    trade_count=int(candle_data.get("trade_count", 0)),
-                    vwap=float(candle_data.get("vwap", 0)),
-                )
-                self._feature_store.on_candle(candle)
-
-                # Also run ensemble for strategies on this timeframe
-                features = self._feature_store.get_features(timeframe)
-                ob_features = None
-                if self._ingestion and self._ingestion.orderbook.is_ready:
-                    ob_features = self._ingestion.orderbook.get_features()
-
-                if features.get("price"):
-                    signal = self._ensemble.on_candle(candle, features, ob_features)
-                    if signal:
-                        signal.metadata["price"] = features.get("price", candle.close)
-                        await self._execution.execute_signal(signal)
-
-            except Exception as e:
-                log.error("feature_update_error", timeframe=timeframe, error=str(e))
+        """DEPRECATED: Merged into _timeframe_processing_loop."""
+        pass
 
     async def _trade_notification_loop(self) -> None:
         """Listen for trade events and send Telegram notifications."""

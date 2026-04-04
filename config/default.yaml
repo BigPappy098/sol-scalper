@@ -89,7 +89,7 @@ strategies:
 
 ensemble:
   min_signal_confidence: 0.55
-  min_combined_weight: 0.5
+  min_combined_weight: 0.4
 
 self_improve:
   evaluation_interval_hours: 6

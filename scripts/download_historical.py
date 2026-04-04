@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from src.config.settings import get_settings
 from src.data.schemas import Candle
 from src.db.database import Database
-from src.execution.bybit_client import HyperliquidClient
+from src.execution.hyperliquid_client import HyperliquidClient
 from src.utils.logging import setup_logging, get_logger
 
 log = get_logger(__name__)

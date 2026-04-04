@@ -16,7 +16,7 @@ from src.data.schemas import (
     TradeRecord,
 )
 from src.db.database import Database
-from src.execution.bybit_client import HyperliquidClient
+from src.execution.hyperliquid_client import HyperliquidClient
 from src.risk.manager import RiskManager
 from src.utils.events import EventBus
 from src.utils.logging import get_logger

@@ -11,7 +11,7 @@ from src.data.candle_builder import CandleBuilder
 from src.data.orderbook import OrderbookManager
 from src.data.schemas import Candle, Tick
 from src.db.database import Database
-from src.execution.bybit_client import HyperliquidClient
+from src.execution.hyperliquid_client import HyperliquidClient
 from src.utils.events import EventBus
 from src.utils.logging import get_logger
 
@@ -166,9 +166,13 @@ class DataIngestionService:
         Puts candle into async queue for processing.
         """
         try:
-            self._candle_queue.put_nowait(candle)
-        except asyncio.QueueFull:
-            log.warning("candle_queue_full", timeframe=candle.timeframe)
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.call_soon_threadsafe(self._candle_queue.put_nowait, candle)
+            else:
+                self._candle_queue.put_nowait(candle)
+        except Exception as e:
+            log.warning("candle_queue_failed", timeframe=candle.timeframe, error=str(e))
 
     async def _process_candle_queue(self) -> None:
         """Async task that processes completed candles: stores in DB and publishes events."""

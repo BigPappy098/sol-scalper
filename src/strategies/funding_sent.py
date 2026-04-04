@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from src.data.schemas import Candle, Signal, SignalDirection
-from src.execution.bybit_client import HyperliquidClient
+from src.execution.hyperliquid_client import HyperliquidClient
 from src.strategies.base import BaseStrategy
 from src.utils.logging import get_logger
 
