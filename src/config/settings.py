@@ -89,12 +89,21 @@ class Settings(BaseSettings):
     @property
     def coin(self) -> str:
         """Get the coin name for Hyperliquid (e.g. 'SOL')."""
-        # Strip USDT/USD/PERP suffixes if present
+        # Standardize to uppercase
         s = self.symbol.upper()
-        for suffix in ("USDT", "USD", "PERP", "-PERP"):
-            if s.endswith(suffix):
+        
+        # Handle cases like SOL/USDT, SOL-USD, SOL:PERP by taking the first part
+        for sep in ("/", "-", "_", ":"):
+            if sep in s:
+                s = s.split(sep)[0]
+                break
+        
+        # Strip common trading suffixes
+        for suffix in ("USDT", "USD", "PERP"):
+            if s.endswith(suffix) and len(s) > len(suffix):
                 s = s[: -len(suffix)]
-        return s
+        
+        return s.strip()
 
     @property
     def hl_base_url(self) -> str:

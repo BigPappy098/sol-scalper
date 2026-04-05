@@ -117,8 +117,20 @@ class _RobustWebsocketManager(WebsocketManager):
         """Re-subscribe to all channels after (re)connect."""
         log.info("ws_opened", identifiers=list(self.active_subscriptions.keys()))
         self.ws_ready = True
+        
+        # We need a fresh userEvents subscription if we're re-connecting,
+        # because the signature/timestamp in the original sub_dict might have expired.
+        # This is handled by the higher-level client logic re-calling subscribe if needed,
+        # or we can try to refresh it here if we have the wallet.
+        # For now, we skip re-subscribing userEvents if it was already in _subscription_dicts
+        # and let the logic in start_private_ws handle it or the server fail it.
+        
         # Re-subscribe existing active subscriptions
         for identifier, subs in list(self.active_subscriptions.items()):
+            if identifier is None or identifier == "userEvents":
+                log.info("ws_skip_resubscribe", identifier=identifier)
+                continue
+                
             for active_sub in subs:
                 # Reconstruct the subscription dict from stored map OR identifier
                 sub_dict = self._subscription_dicts.get(identifier)

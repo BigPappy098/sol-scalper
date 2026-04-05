@@ -167,6 +167,8 @@ class TradingSystem:
             ensemble=self._ensemble,
             ingestion=self._ingestion,
             feature_store=self._feature_store,
+            symbol=self._settings.symbol,
+            mode=self._settings.trading_mode,
         )
         self._dashboard.start_background()
 

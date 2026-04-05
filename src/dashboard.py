@@ -82,20 +82,26 @@ class TradingDashboard:
         self._win_count_today = 0
         self._loss_count_today = 0
         self._signals_today = 0
+        self._symbol = "SOL/USDT"
+        self._mode = "PAPER"
 
     def set_components(
         self,
-        execution: ExecutionEngine,
-        risk: RiskManager,
-        ensemble: StrategyEnsemble,
+        execution: ExecutionEngine | None = None,
+        risk: RiskManager | None = None,
+        ensemble: StrategyEnsemble | None = None,
         ingestion: DataIngestionService | None = None,
         feature_store: FeatureStore | None = None,
+        symbol: str = "SOL/USDT",
+        mode: str = "PAPER",
     ) -> None:
         self._execution = execution
         self._risk = risk
         self._ensemble = ensemble
         self._ingestion = ingestion
         self._feature_store = feature_store
+        self._symbol = symbol
+        self._mode = mode.upper()
 
     def update_price(self, price: float) -> None:
         """Call this whenever we get a new price."""
@@ -185,7 +191,7 @@ class TradingDashboard:
 
     def _render_header(self) -> Panel:
         """Render the header bar."""
-        mode = "PAPER" if not self._risk or True else "LIVE"
+        mode = self._mode
         equity = self._risk.equity if self._risk else 0
         daily_pnl = self._risk.daily_pnl if self._risk else 0
         pnl_color = "green" if daily_pnl >= 0 else "red"
@@ -222,7 +228,7 @@ class TradingDashboard:
 
         # Price display
         price_text = Text()
-        price_text.append("  SOL/USDT  ", style="bold white")
+        price_text.append(f"  {self._symbol}  ", style="bold white")
         price_text.append(f"${price:,.4f}", style=f"bold {color}")
         price_text.append(f"  {arrow} {sign}{price_change:,.4f} ({sign}{pct_change:.2f}%)", style=color)
 
@@ -240,7 +246,7 @@ class TradingDashboard:
             range_text.append(f"  L: ${lo:,.4f}  H: ${hi:,.4f}  ", style="dim")
             range_text.append(f"(last {len(self._price_history)} ticks)", style="dim italic")
         else:
-            range_text = Text("  Waiting for data...", style="dim italic")
+            range_text = Text(f"  Waiting for {self._symbol} data...", style="dim italic")
 
         return Panel(
             Group(price_text, Text(""), spark_text, range_text),
@@ -441,6 +447,10 @@ async def _standalone_dashboard() -> None:
     await event_bus.connect()
 
     dashboard = TradingDashboard()
+    dashboard.set_components(
+        symbol=settings.symbol,
+        mode=settings.trading_mode,
+    )
     dashboard.start_background()
 
     print("Dashboard started. Listening for events...")
