@@ -144,6 +144,9 @@ class TradingSystem:
         )
         await self._ingestion.start()
 
+        # 6.5 Warm up feature store with historical data from DB
+        await self._warm_up_features()
+
         # 7. Initialize Telegram
         self._telegram = TelegramNotifier()
         self._telegram.set_components(self._execution, self._risk, self._ensemble)
@@ -218,6 +221,46 @@ class TradingSystem:
 
         log.info("system_stopped")
 
+    async def _warm_up_features(self) -> None:
+        """Pre-load recent candles from DB into FeatureStore for all timeframes."""
+        if not self._feature_store or not self._db:
+            return
+
+        timeframes = self._settings.get_data_config().get(
+            "candle_timeframes", ["1s", "5s", "15s", "1m", "5m"]
+        )
+
+        log.info("feature_store_warm_up_starting", timeframes=timeframes)
+        total_count = 0
+        for tf in timeframes:
+            try:
+                # Fetch last 200 candles from DB
+                candles_data = await self._db.get_latest_candles(tf, count=200)
+                for c_dict in candles_data:
+                    candle = Candle(
+                        timestamp=c_dict["ts"],
+                        timeframe=c_dict["timeframe"],
+                        open=float(c_dict["open"]),
+                        high=float(c_dict["high"]),
+                        low=float(c_dict["low"]),
+                        close=float(c_dict["close"]),
+                        volume=float(c_dict["volume"]),
+                        trade_count=int(c_dict.get("trade_count", 0)),
+                        vwap=float(c_dict.get("vwap", 0)),
+                    )
+                    self._feature_store.on_candle(candle)
+                    total_count += 1
+                
+                if candles_data:
+                    log.info("timeframe_warmed_up", timeframe=tf, count=len(candles_data))
+            except Exception as e:
+                log.warning("warm_up_failed_for_tf", timeframe=tf, error=str(e))
+
+        if total_count > 0:
+            log.info("feature_store_warmed_up", total_candles=total_count)
+        else:
+            log.info("feature_store_warm_up_skipped", reason="no_data_in_db")
+
     async def _trading_loop(self) -> None:
         """Main trading loop — listens for candle events and runs the ensemble."""
         # Subscribe to all candle timeframes
@@ -233,11 +276,13 @@ class TradingSystem:
 
     async def _timeframe_processing_loop(self, timeframe: str) -> None:
         """Process candles for a specific timeframe."""
+        log.info("timeframe_loop_started", timeframe=timeframe)
         async for _msg_id, candle_data in self._event_bus.subscribe(f"candles:{timeframe}"):
             if not self._running:
                 break
 
             try:
+                log.debug("candle_received", timeframe=timeframe, ts=candle_data.get("timestamp"))
                 # Reconstruct candle from event data
                 candle = Candle(
                     timestamp=datetime.fromisoformat(candle_data["timestamp"]),
@@ -311,41 +356,54 @@ class TradingSystem:
             return
 
         async def price_feed():
-            async for _msg_id, data in self._event_bus.subscribe("candles:1s"):
-                if not self._running:
-                    break
-                try:
-                    price = float(data.get("close", 0))
-                    if price > 0:
-                        self._dashboard.update_price(price)
-                except Exception as e:
-                    log.error("dashboard_price_feed_error", error=str(e))
+            log.info("dashboard_price_feed_started")
+            try:
+                async for _msg_id, data in self._event_bus.subscribe("candles:1s"):
+                    if not self._running:
+                        break
+                    try:
+                        price = float(data.get("close", 0))
+                        if price > 0:
+                            self._dashboard.update_price(price)
+                    except (TypeError, ValueError) as e:
+                        log.debug("dashboard_price_parse_error", error=str(e))
+            except Exception as e:
+                log.error("dashboard_price_feed_crash", error=str(e))
 
         async def trade_feed():
-            async for _msg_id, data in self._event_bus.subscribe("trades:exit", last_id="$"):
-                if not self._running:
-                    break
-                try:
-                    self._dashboard.record_trade(data)
-                except Exception as e:
-                    log.error("dashboard_trade_feed_error", error=str(e))
+            log.info("dashboard_trade_feed_started")
+            try:
+                async for _msg_id, data in self._event_bus.subscribe("trades:exit", last_id="$"):
+                    if not self._running:
+                        break
+                    try:
+                        self._dashboard.record_trade(data)
+                    except Exception as e:
+                        log.debug("dashboard_trade_record_error", error=str(e))
+            except Exception as e:
+                log.error("dashboard_trade_feed_crash", error=str(e))
 
         async def signal_feed():
-            async for _msg_id, data in self._event_bus.subscribe("trades:entry", last_id="$"):
-                if not self._running:
-                    break
-                try:
-                    self._dashboard.record_signal()
-                except Exception as e:
-                    log.error("dashboard_signal_feed_error", error=str(e))
+            log.info("dashboard_signal_feed_started")
+            try:
+                async for _msg_id, data in self._event_bus.subscribe("trades:entry", last_id="$"):
+                    if not self._running:
+                        break
+                    try:
+                        self._dashboard.record_signal()
+                    except Exception as e:
+                        log.debug("dashboard_signal_record_error", error=str(e))
+            except Exception as e:
+                log.error("dashboard_signal_feed_crash", error=str(e))
 
         async def equity_feed():
+            log.info("dashboard_equity_feed_started")
             while self._running:
                 try:
                     if self._risk:
                         self._dashboard.update_equity(self._risk.equity)
                 except Exception as e:
-                    log.error("dashboard_equity_feed_error", error=str(e))
+                    log.debug("dashboard_equity_update_error", error=str(e))
                 await asyncio.sleep(5)
 
         asyncio.create_task(price_feed())

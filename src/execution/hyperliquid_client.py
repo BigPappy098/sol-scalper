@@ -17,7 +17,6 @@ from hyperliquid.exchange import Exchange
 from hyperliquid.info import Info
 from hyperliquid.utils import constants
 from hyperliquid.websocket_manager import (
-    ActiveSubscription,
     WebsocketManager,
     subscription_to_identifier,
     ws_msg_to_identifier,
@@ -67,14 +66,22 @@ class _RobustWebsocketManager(WebsocketManager):
         """Override subscribe to save the original dict."""
         identifier = subscription_to_identifier(subscription)
         if identifier:
-            self._subscription_dicts[identifier] = subscription
+            # Deep copy to avoid mutation issues
+            self._subscription_dicts[identifier] = dict(subscription)
+        
+        # Call super().subscribe — this adds to active_subscriptions and sends if ws_ready
         return super().subscribe(subscription, callback, subscription_id)
 
     # -- lifecycle ----------------------------------------------------------
 
     def run(self):
         """Main thread: run WS with automatic reconnection."""
-        self.ping_sender.start()
+        if not self.ping_sender.is_alive():
+            try:
+                self.ping_sender.start()
+            except RuntimeError:
+                pass
+
         while not self._stop_event.is_set():
             try:
                 log.info("ws_connecting", url=self._ws_url)
@@ -83,13 +90,16 @@ class _RobustWebsocketManager(WebsocketManager):
                 )
             except Exception as e:
                 log.error("ws_run_forever_error", error=str(e))
+            
             # Connection dropped — reconnect unless stopped
             if self._stop_event.is_set():
                 break
+            
             self.ws_ready = False
             log.warning("ws_disconnected_reconnecting",
                         delay=self._RECONNECT_DELAY)
             time.sleep(self._RECONNECT_DELAY)
+            
             # Build a fresh WebSocketApp but keep our subscriptions
             self.ws = _ws_module.WebSocketApp(
                 self._ws_url,
@@ -114,43 +124,43 @@ class _RobustWebsocketManager(WebsocketManager):
                 # Don't crash — run() loop will handle reconnection
 
     def on_open(self, _ws):
-        """Re-subscribe to all channels after (re)connect."""
+        """Re-subscribe to all channels after (connect or reconnect)."""
         log.info("ws_opened", identifiers=list(self.active_subscriptions.keys()))
         self.ws_ready = True
         
-        # We need a fresh userEvents subscription if we're re-connecting,
-        # because the signature/timestamp in the original sub_dict might have expired.
-        # This is handled by the higher-level client logic re-calling subscribe if needed,
-        # or we can try to refresh it here if we have the wallet.
-        # For now, we skip re-subscribing userEvents if it was already in _subscription_dicts
-        # and let the logic in start_private_ws handle it or the server fail it.
-        
-        # Re-subscribe existing active subscriptions
-        for identifier, subs in list(self.active_subscriptions.items()):
-            if identifier is None or identifier == "userEvents":
-                log.info("ws_skip_resubscribe", identifier=identifier)
+        # 1. Send all existing active subscriptions
+        # We iterate over unique identifiers to avoid double-subscribing 
+        # if multiple callbacks exist for one stream.
+        for identifier in list(self.active_subscriptions.keys()):
+            if identifier is None:
                 continue
                 
-            for active_sub in subs:
-                # Reconstruct the subscription dict from stored map OR identifier
-                sub_dict = self._subscription_dicts.get(identifier)
-                if not sub_dict:
-                    sub_dict = self._identifier_to_subscription(identifier)
+            sub_dict = self._subscription_dicts.get(identifier)
+            if not sub_dict:
+                sub_dict = self._identifier_to_subscription(identifier)
 
-                if sub_dict:
-                    try:
-                        self.ws.send(json.dumps({
-                            "method": "subscribe",
-                            "subscription": sub_dict,
-                        }))
-                    except Exception as e:
-                        log.error("ws_resubscribe_failed",
-                                  identifier=identifier, error=str(e))
-        # Also send queued ones (first connect)
-        for subscription, active_subscription in self.queued_subscriptions:
-            self.subscribe(subscription, active_subscription.callback,
-                           active_subscription.subscription_id)
-        self.queued_subscriptions.clear()
+            if sub_dict:
+                try:
+                    log.info("ws_resubscribing", identifier=identifier)
+                    self.ws.send(json.dumps({
+                        "method": "subscribe",
+                        "subscription": sub_dict,
+                    }))
+                except Exception as e:
+                    log.error("ws_resubscribe_failed",
+                              identifier=identifier, error=str(e))
+        
+        # 2. Process queued ones (first connect)
+        # We drain the queue carefully to avoid duplicates.
+        while self.queued_subscriptions:
+            subscription, active_subscription = self.queued_subscriptions.pop(0)
+            try:
+                self.ws.send(json.dumps({
+                    "method": "subscribe",
+                    "subscription": subscription,
+                }))
+            except Exception as e:
+                log.error("ws_queued_sub_failed", error=str(e))
 
     def _on_error(self, _ws, error):
         log.warning("ws_error", error=str(error))
@@ -171,13 +181,14 @@ class _RobustWebsocketManager(WebsocketManager):
 
     @staticmethod
     def _identifier_to_subscription(identifier: str | None) -> dict | None:
-        """Reverse map an identifier back to a subscription dict."""
+        """Reverse map an identifier back to a subscription dict (fallback)."""
         if identifier is None:
             return None
         if identifier == "allMids":
             return {"type": "allMids"}
-        if identifier == "userEvents":
-            return {"type": "userEvents"}  # user filled in by subscribe()
+        if identifier.startswith("userEvents:"):
+            addr = identifier.split(":", 1)[1]
+            return {"type": "userEvents", "user": addr}
         if identifier.startswith("l2Book:"):
             coin = identifier.split(":", 1)[1].upper()
             return {"type": "l2Book", "coin": coin}
@@ -190,6 +201,7 @@ class _RobustWebsocketManager(WebsocketManager):
             interval = parts[2] if len(parts) > 2 else "1m"
             return {"type": "candle", "coin": coin, "interval": interval}
         return None
+
 
 
 def _patched_info_init(self, base_url=None, skip_ws=False):
@@ -245,6 +257,13 @@ class HyperliquidClient:
     @property
     def address(self) -> str:
         return self._address
+
+    @property
+    def ws_ready(self) -> bool:
+        """Check if the WebSocket connection is ready."""
+        if self._info_ws and self._info_ws.ws_manager:
+            return getattr(self._info_ws.ws_manager, "ws_ready", False)
+        return False
 
     def connect(self) -> None:
         """Initialize HTTP connections (Exchange + Info)."""
@@ -380,7 +399,8 @@ class HyperliquidClient:
         base_url = self._settings.hl_base_url
         coin = self._settings.coin
 
-        self._info_ws = Info(base_url, skip_ws=False)
+        if self._info_ws is None:
+            self._info_ws = Info(base_url, skip_ws=False)
         self._ws_running = True
 
         if "trade" in callbacks:

@@ -58,6 +58,7 @@ class DataIngestionService:
     async def start(self) -> None:
         """Start data ingestion: backfill history, then connect WebSocket."""
         self._running = True
+        self._loop = asyncio.get_running_loop()
 
         # Backfill historical 1m candles
         await self._backfill_history()
@@ -167,12 +168,10 @@ class DataIngestionService:
         Puts candle into async queue for processing.
         """
         try:
-            if self._loop.is_running():
+            if self._loop and self._loop.is_running():
                 self._loop.call_soon_threadsafe(self._candle_queue.put_nowait, candle)
             else:
-                # This fallback is for initialization if a candle somehow finishes
-                # before the loop is fully running, but still in the same thread.
-                self._candle_queue.put_nowait(candle)
+                log.warning("event_loop_not_running_for_candle", timeframe=candle.timeframe)
         except Exception as e:
             log.warning("candle_queue_failed", timeframe=candle.timeframe, error=str(e))
 
@@ -205,4 +204,5 @@ class DataIngestionService:
             "tick_count": self._tick_count,
             "orderbook_ready": self._orderbook.is_ready,
             "running": self._running,
+            "ws_ready": self._client.ws_ready if self._client else False,
         }

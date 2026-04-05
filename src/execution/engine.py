@@ -50,6 +50,7 @@ class ExecutionEngine:
         self._positions: dict[str, Position] = {}
         self._running = False
         self._instrument_info: dict = {}
+        self._last_price = 0.0
 
     async def start(self) -> None:
         """Initialize the execution engine."""
@@ -96,6 +97,9 @@ class ExecutionEngine:
         # Start position monitor (handles SL/TP/time stops since HL doesn't have native SL/TP on market orders)
         asyncio.create_task(self._monitor_positions())
 
+        # Start price update loop from event bus
+        asyncio.create_task(self._price_update_loop())
+
         # Start private WebSocket for fill updates
         self._client.start_private_ws({
             "execution": self._on_execution,
@@ -106,9 +110,21 @@ class ExecutionEngine:
     async def stop(self) -> None:
         self._running = False
 
+    async def _price_update_loop(self) -> None:
+        """Subscribe to 1s candles to maintain a local price cache."""
+        try:
+            async for _msg_id, data in self._event_bus.subscribe("candles:1s"):
+                if not self._running:
+                    break
+                price = float(data.get("close", 0))
+                if price > 0:
+                    self._last_price = price
+        except Exception as e:
+            log.error("execution_price_update_error", error=str(e))
+
     async def execute_signal(self, signal: Signal) -> Position | None:
         """Execute a trading signal: check risk, place order, track position."""
-        current_price = await asyncio.to_thread(self._get_current_price, signal)
+        current_price = self._get_current_price(signal)
         if current_price <= 0:
             log.warning("no_price_for_signal", strategy=signal.strategy_name)
             return None
@@ -239,7 +255,7 @@ class ExecutionEngine:
 
         # Get actual exit price (use provided or estimate from order)
         if exit_price is None:
-            exit_price = await asyncio.to_thread(self._estimate_current_price)
+            exit_price = self._estimate_current_price()
 
         return await self._finalize_position(position, exit_price, reason)
 
@@ -332,7 +348,7 @@ class ExecutionEngine:
         while self._running:
             try:
                 now = datetime.now(timezone.utc)
-                current_price = await asyncio.to_thread(self._estimate_current_price)
+                current_price = self._estimate_current_price()
 
 
                 for pos_id, position in list(self._positions.items()):
@@ -396,11 +412,15 @@ class ExecutionEngine:
             log.error("execution_callback_error", error=str(e))
 
     def _get_current_price(self, signal: Signal) -> float:
-        """Get current price from signal metadata or ticker."""
+        """Get current price from signal metadata or local cache."""
         price = signal.metadata.get("price", 0)
         if price > 0:
             return price
 
+        if self._last_price > 0:
+            return self._last_price
+
+        # Fallback to ticker if cache empty (rare)
         try:
             ticker = self._client.get_tickers(self._settings.symbol)
             return float(ticker.get("lastPrice", 0))
@@ -408,7 +428,11 @@ class ExecutionEngine:
             return 0.0
 
     def _estimate_current_price(self) -> float:
-        """Get current price for PnL estimation."""
+        """Get current price for PnL estimation from local cache."""
+        if self._last_price > 0:
+            return self._last_price
+            
+        # Fallback to ticker if cache empty (rare)
         try:
             ticker = self._client.get_tickers(self._settings.symbol)
             return float(ticker.get("lastPrice", 0))

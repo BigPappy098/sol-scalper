@@ -399,6 +399,7 @@ class TradingDashboard:
         ingestion_stats = self._ingestion.get_stats() if self._ingestion else {}
         tick_count = ingestion_stats.get("tick_count", 0)
         ob_ready = ingestion_stats.get("orderbook_ready", False)
+        ws_ready = ingestion_stats.get("ws_ready", False)
 
         # Feature store status
         feature_ready = False
@@ -411,6 +412,9 @@ class TradingDashboard:
 
         footer = Text()
         footer.append(f" {now} ", style="dim")
+        footer.append(" │ ", style="dim")
+        footer.append("WS: ", style="dim")
+        footer.append("✓" if ws_ready else "✗", style="green" if ws_ready else "red")
         footer.append(" │ ", style="dim")
         footer.append("Ticks: ", style="dim")
         footer.append(f"{tick_count:,}", style="white")
