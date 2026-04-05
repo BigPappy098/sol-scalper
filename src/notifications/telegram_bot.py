@@ -73,15 +73,42 @@ class TelegramNotifier:
                 CommandHandler,
                 ContextTypes,
             )
+            from telegram.request import HTTPXRequest
 
-            self._app = ApplicationBuilder().token(token).build()
+            # Use a custom request with longer timeouts to prevent ReadError
+            request = HTTPXRequest(
+                connect_timeout=15.0,
+                read_timeout=20.0,
+            )
 
-            # Register command handlers
-            self._app.add_handler(CommandHandler("status", self._cmd_status))
-            self._app.add_handler(CommandHandler("pnl", self._cmd_pnl))
-            self._app.add_handler(CommandHandler("trades", self._cmd_trades))
-            self._app.add_handler(CommandHandler("strategies", self._cmd_strategies))
-            self._app.add_handler(CommandHandler("health", self._cmd_health))
+            self._app = (
+                ApplicationBuilder()
+                .token(token)
+                .request(request)
+                .get_updates_request(request)
+                .build()
+            )
+
+            # Register command handlers with a wrapper for error handling
+            async def wrap_handler(handler_func):
+                async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+                    try:
+                        await handler_func(update, context)
+                    except Exception as e:
+                        log.error("telegram_command_error", 
+                                  command=handler_func.__name__, 
+                                  error=str(e))
+                        try:
+                            await update.message.reply_text(f"Error executing command: {str(e)}")
+                        except:
+                            pass
+                return wrapper
+
+            self._app.add_handler(CommandHandler("status", await wrap_handler(self._cmd_status)))
+            self._app.add_handler(CommandHandler("pnl", await wrap_handler(self._cmd_pnl)))
+            self._app.add_handler(CommandHandler("trades", await wrap_handler(self._cmd_trades)))
+            self._app.add_handler(CommandHandler("strategies", await wrap_handler(self._cmd_strategies)))
+            self._app.add_handler(CommandHandler("health", await wrap_handler(self._cmd_health)))
 
             # Start polling in background
             await self._app.initialize()
@@ -95,6 +122,7 @@ class TelegramNotifier:
             log.warning("telegram_library_not_installed")
         except Exception as e:
             log.error("telegram_bot_start_failed", error=str(e))
+
 
     async def stop(self) -> None:
         if self._app:

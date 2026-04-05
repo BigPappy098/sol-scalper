@@ -458,18 +458,28 @@ async def _standalone_dashboard() -> None:
 
     # Listen for price updates and trade events
     async def price_listener():
-        async for _msg_id, data in event_bus.subscribe("candles:1s"):
-            price = float(data.get("close", 0))
-            if price > 0:
-                dashboard.update_price(price)
+        try:
+            async for _msg_id, data in event_bus.subscribe("candles:1s"):
+                price = float(data.get("close", 0))
+                if price > 0:
+                    dashboard.update_price(price)
+        except Exception as e:
+            print(f"Price listener error: {e}")
 
     async def trade_listener():
-        async for _msg_id, data in event_bus.subscribe("trades:exit"):
-            dashboard.record_trade(data)
+        try:
+            async for _msg_id, data in event_bus.subscribe("trades:exit"):
+                dashboard.record_trade(data)
+        except Exception as e:
+            print(f"Trade listener error: {e}")
 
     async def signal_listener():
-        async for _msg_id, data in event_bus.subscribe("trades:entry"):
-            dashboard.record_signal()
+        try:
+            async for _msg_id, data in event_bus.subscribe("trades:entry"):
+                dashboard.record_signal()
+        except Exception as e:
+            print(f"Signal listener error: {e}")
+
 
     try:
         await asyncio.gather(

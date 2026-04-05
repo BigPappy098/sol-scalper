@@ -108,7 +108,7 @@ class TradingSystem:
         # 2. Initialize risk manager with current equity
         self._risk = RiskManager()
         try:
-            equity = self._client.get_equity()
+            equity = await asyncio.to_thread(self._client.get_equity)
             if equity > 0:
                 self._risk.update_equity(equity)
                 log.info("initial_equity", equity=equity)
@@ -121,6 +121,7 @@ class TradingSystem:
             log.error("equity_fetch_failed", error=str(e),
                       hint="Check network connectivity and API credentials")
             self._risk.update_equity(0.0)
+
 
         # 3. Initialize feature store
         self._feature_store = FeatureStore(self._settings.get_feature_config())
@@ -313,26 +314,38 @@ class TradingSystem:
             async for _msg_id, data in self._event_bus.subscribe("candles:1s"):
                 if not self._running:
                     break
-                price = float(data.get("close", 0))
-                if price > 0:
-                    self._dashboard.update_price(price)
+                try:
+                    price = float(data.get("close", 0))
+                    if price > 0:
+                        self._dashboard.update_price(price)
+                except Exception as e:
+                    log.error("dashboard_price_feed_error", error=str(e))
 
         async def trade_feed():
             async for _msg_id, data in self._event_bus.subscribe("trades:exit", last_id="$"):
                 if not self._running:
                     break
-                self._dashboard.record_trade(data)
+                try:
+                    self._dashboard.record_trade(data)
+                except Exception as e:
+                    log.error("dashboard_trade_feed_error", error=str(e))
 
         async def signal_feed():
             async for _msg_id, data in self._event_bus.subscribe("trades:entry", last_id="$"):
                 if not self._running:
                     break
-                self._dashboard.record_signal()
+                try:
+                    self._dashboard.record_signal()
+                except Exception as e:
+                    log.error("dashboard_signal_feed_error", error=str(e))
 
         async def equity_feed():
             while self._running:
-                if self._risk:
-                    self._dashboard.update_equity(self._risk.equity)
+                try:
+                    if self._risk:
+                        self._dashboard.update_equity(self._risk.equity)
+                except Exception as e:
+                    log.error("dashboard_equity_feed_error", error=str(e))
                 await asyncio.sleep(5)
 
         asyncio.create_task(price_feed())
@@ -340,15 +353,17 @@ class TradingSystem:
         asyncio.create_task(signal_feed())
         asyncio.create_task(equity_feed())
 
+
     async def _equity_snapshot_loop(self) -> None:
         """Periodically snapshot equity for tracking."""
         while self._running:
             try:
-                equity = self._client.get_equity()
+                equity = await asyncio.to_thread(self._client.get_equity)
                 if equity > 0:
                     self._risk.update_equity(equity)
                 else:
                     log.warning("equity_snapshot_zero", equity=equity)
+
 
                 await self._db.execute(
                     """

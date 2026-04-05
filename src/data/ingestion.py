@@ -31,6 +31,7 @@ class DataIngestionService:
         self._event_bus = event_bus
         self._db = database
         self._settings = get_settings()
+        self._loop = asyncio.get_event_loop()
 
         data_config = self._settings.get_data_config()
         timeframes = data_config.get("candle_timeframes", ["1s", "5s", "15s", "1m", "5m"])
@@ -166,13 +167,15 @@ class DataIngestionService:
         Puts candle into async queue for processing.
         """
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                loop.call_soon_threadsafe(self._candle_queue.put_nowait, candle)
+            if self._loop.is_running():
+                self._loop.call_soon_threadsafe(self._candle_queue.put_nowait, candle)
             else:
+                # This fallback is for initialization if a candle somehow finishes
+                # before the loop is fully running, but still in the same thread.
                 self._candle_queue.put_nowait(candle)
         except Exception as e:
             log.warning("candle_queue_failed", timeframe=candle.timeframe, error=str(e))
+
 
     async def _process_candle_queue(self) -> None:
         """Async task that processes completed candles: stores in DB and publishes events."""

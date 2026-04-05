@@ -57,7 +57,8 @@ class ExecutionEngine:
 
         # Get instrument info for proper rounding
         try:
-            self._instrument_info = self._client.get_instrument_info(
+            self._instrument_info = await asyncio.to_thread(
+                self._client.get_instrument_info,
                 self._settings.symbol
             )
             log.info(
@@ -71,7 +72,8 @@ class ExecutionEngine:
 
         # Set leverage
         try:
-            self._client.set_leverage(
+            await asyncio.to_thread(
+                self._client.set_leverage,
                 self._settings.symbol,
                 self._settings.max_leverage,
             )
@@ -81,7 +83,7 @@ class ExecutionEngine:
 
         # Update equity from exchange
         try:
-            equity = self._client.get_equity()
+            equity = await asyncio.to_thread(self._client.get_equity)
             if equity > 0:
                 self._risk.update_equity(equity)
                 log.info("initial_equity", equity=equity)
@@ -89,6 +91,7 @@ class ExecutionEngine:
                 log.warning("engine_equity_zero", equity=equity)
         except Exception as e:
             log.error("equity_fetch_failed", error=str(e))
+
 
         # Start position monitor (handles SL/TP/time stops since HL doesn't have native SL/TP on market orders)
         asyncio.create_task(self._monitor_positions())
@@ -105,7 +108,7 @@ class ExecutionEngine:
 
     async def execute_signal(self, signal: Signal) -> Position | None:
         """Execute a trading signal: check risk, place order, track position."""
-        current_price = self._get_current_price(signal)
+        current_price = await asyncio.to_thread(self._get_current_price, signal)
         if current_price <= 0:
             log.warning("no_price_for_signal", strategy=signal.strategy_name)
             return None
@@ -140,7 +143,8 @@ class ExecutionEngine:
         position_id = str(uuid.uuid4())[:8]
 
         try:
-            order_result = self._client.place_order(
+            order_result = await asyncio.to_thread(
+                self._client.place_order,
                 symbol=self._settings.coin,
                 side=side,
                 qty=quantity,
@@ -218,7 +222,8 @@ class ExecutionEngine:
         close_side = "Sell" if position.side == Side.LONG else "Buy"
 
         try:
-            result = self._client.place_order(
+            result = await asyncio.to_thread(
+                self._client.place_order,
                 symbol=position.symbol,
                 side=close_side,
                 qty=position.quantity,
@@ -234,9 +239,10 @@ class ExecutionEngine:
 
         # Get actual exit price (use provided or estimate from order)
         if exit_price is None:
-            exit_price = self._estimate_current_price()
+            exit_price = await asyncio.to_thread(self._estimate_current_price)
 
         return await self._finalize_position(position, exit_price, reason)
+
 
     async def _finalize_position(
         self,
@@ -326,7 +332,8 @@ class ExecutionEngine:
         while self._running:
             try:
                 now = datetime.now(timezone.utc)
-                current_price = self._estimate_current_price()
+                current_price = await asyncio.to_thread(self._estimate_current_price)
+
 
                 for pos_id, position in list(self._positions.items()):
                     if position.status != "open":
